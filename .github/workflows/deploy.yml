@@ -1,0 +1,87 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run tests
+      run: |
+        pytest --cov=src --cov-report=xml
+
+    - name: Run benchmark
+      run: |
+        python benchmark/benchmark.py --jobs 100 --workers 2 --duration 10
+
+    - name: Build Docker image
+      run: |
+        docker build -t distributed-job-engine:latest .
+
+    - name: Run Docker container
+      run: |
+        docker run -d --name job-engine -p 8000:8000 distributed-job-engine:latest
+
+    - name: Health check
+      run: |
+        sleep 5
+        curl -f http://localhost:8000/api/v1/health || exit 1
+
+    - name: Run integration tests
+      run: |
+        pip install httpx
+        python -c "
+import httpx
+import time
+
+# Test API endpoints
+response = httpx.get('http://localhost:8000/api/v1/health')
+assert response.status_code == 200
+
+response = httpx.post('http://localhost:8000/api/v1/jobs', json={
+    'payload': 'test job',
+    'priority': 'normal'
+})
+assert response.status_code == 201
+job_id = response.json()['job_id']
+
+response = httpx.get(f'http://localhost:8000/api/v1/jobs/{job_id}')
+assert response.status_code == 200
+
+response = httpx.get('http://localhost:8000/api/v1/metrics')
+assert response.status_code == 200
+
+print('All integration tests passed')
+"
+
+    - name: Stop Docker container
+      if: always()
+      run: |
+        docker stop job-engine || true
+        docker rm job-engine || true
+
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-results
+        path: |
+          benchmark/benchmark_results.json
+          coverage.xml
+        retention-days: 30
