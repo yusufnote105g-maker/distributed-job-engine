@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+*.pyd
 *.so
 .Python
 build/
@@ -19,11 +21,17 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Virtual environments
 venv/
 env/
 ENV/
+.env
+.venv
+env.bak
+venv.bak
 
 # IDE
 .idea/
@@ -42,8 +50,11 @@ jobs.db
 .coverage
 htmlcov/
 .pytest_cache/
+.pytest_cache/
 benchmark_results.json
 data/
+.cache/
+site-packages/
 
 # Docker
 .dockerignore
