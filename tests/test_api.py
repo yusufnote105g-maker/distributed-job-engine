@@ -205,3 +205,53 @@ async def test_openapi_documents_all_endpoints(api_client):
         f"{API}/metrics",
     }
     assert expected <= set(paths)
+
+
+STATS_KEYS = {
+    "total_jobs",
+    "status_counts",
+    "pending_jobs",
+    "claimed_jobs",
+    "running_jobs",
+    "completed_jobs",
+    "failed_jobs",
+    "cancelled_jobs",
+    "retrying_jobs",
+    "dead_letter_jobs",
+    "oldest_pending_job",
+}
+
+METRICS_EXTRA_KEYS = {
+    "average_execution_time",
+    "worker_count",
+    "active_workers",
+    "processor_running",
+    "worker_id",
+    "processed_by_this_processor",
+    "failed_by_this_processor",
+}
+
+
+@pytest.mark.asyncio
+async def test_stats_and_metrics_match_documented_contract(api_client):
+    """`docs/api.md` lists these exact fields; keep the two in sync."""
+    stats = await api_client.get(f"{API}/stats")
+    assert stats.status_code == 200
+    assert set(stats.json()) == STATS_KEYS
+
+    metrics = await api_client.get(f"{API}/metrics")
+    assert metrics.status_code == 200
+    assert set(metrics.json()) == STATS_KEYS | METRICS_EXTRA_KEYS
+
+
+@pytest.mark.asyncio
+async def test_health_matches_documented_contract(api_client):
+    health = await api_client.get(f"{API}/health")
+    assert health.status_code == 200
+    assert set(health.json()) == {
+        "status",
+        "timestamp",
+        "version",
+        "database_status",
+        "worker_status",
+    }
