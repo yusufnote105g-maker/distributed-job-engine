@@ -58,7 +58,8 @@ timeouts do not consume the retry budget.
 
 ## Auth is a shared static key
 
-`SECRET_KEY` is a single shared secret compared with `==`. No users, no scopes,
+`SECRET_KEY` is a single shared secret compared in constant time
+(`hmac.compare_digest`). No users, no scopes,
 no rotation, no rate limiting, and auth is disabled entirely when the key is
 empty. Put the service behind a gateway if it is exposed.
 
