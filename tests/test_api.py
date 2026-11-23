@@ -188,3 +188,20 @@ async def test_api_key_protection(api_client_factory):
 
     # Read-only endpoints stay public.
     assert (await client.get(f"{API}/jobs")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_all_endpoints(api_client):
+    response = await api_client.get("/openapi.json")
+    assert response.status_code == 200
+
+    paths = response.json()["paths"]
+    expected = {
+        f"{API}/jobs",
+        f"{API}/jobs/{{job_id}}",
+        f"{API}/jobs/{{job_id}}/cancel",
+        f"{API}/health",
+        f"{API}/stats",
+        f"{API}/metrics",
+    }
+    assert expected <= set(paths)
