@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/yusufnote105g-maker/distributed-job-engine/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/yusufnote105g-maker/distributed-job-engine/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/yusufnote105g-maker/distributed-job-engine)](https://github.com/yusufnote105g-maker/distributed-job-engine/releases)
-![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)
 
 An asynchronous job engine with a REST API, priority queue, concurrent
 workers, retries with exponential backoff, per-job timeouts, and durable
