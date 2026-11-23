@@ -1,5 +1,6 @@
 """HTTP API routes."""
 
+import hmac
 import logging
 from datetime import datetime
 from typing import List, Optional
@@ -92,7 +93,9 @@ def require_api_key(request: Request) -> None:
     if not config.secret_key:
         return
     provided = request.headers.get(config.api_key_header)
-    if provided != config.secret_key:
+    if provided is None or not hmac.compare_digest(
+        provided.encode("utf-8"), config.secret_key.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
         )
