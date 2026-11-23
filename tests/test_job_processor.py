@@ -192,3 +192,19 @@ async def test_double_cancel_returns_false(processor):
     job = await processor.submit_job(payload="cancel-twice")
     assert await processor.cancel_job(job["job_id"]) is True
     assert await processor.cancel_job(job["job_id"]) is False
+
+
+@pytest.mark.asyncio
+async def test_initialize_creates_missing_directory(tmp_path):
+    """A sqlite path in a missing directory must be created, not crash."""
+    from src.config import JobEngineConfig
+    from src.services.database import DatabaseService
+
+    db_path = tmp_path / "nested" / "dir" / "jobs.db"
+    config = JobEngineConfig(database_url=f"sqlite:///{db_path}")
+    service = DatabaseService(config)
+    await service.initialize()
+    try:
+        assert db_path.exists()
+    finally:
+        await service.close()

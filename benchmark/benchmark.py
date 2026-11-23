@@ -12,11 +12,18 @@ import argparse
 import asyncio
 import json
 import statistics
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-from src.config import JobEngineConfig
+# Allow `python3 benchmark/benchmark.py` from any working directory without
+# requiring PYTHONPATH to be set.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from src.config import JobEngineConfig  # noqa: E402
 from src.services.database import DatabaseService
 from src.services.job_processor import JobProcessor
 

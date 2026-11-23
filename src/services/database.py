@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -40,6 +41,14 @@ class DatabaseService:
         url = self.config.database_url
         kwargs: Dict[str, Any] = {"echo": False}
         is_sqlite = url.startswith("sqlite")
+        if is_sqlite and ":memory:" not in url:
+            # Make sure the parent directory exists; SQLite refuses to create a
+            # database file inside a missing directory.
+            from sqlalchemy.engine import make_url
+
+            db_path = make_url(url).database
+            if db_path and db_path != ":memory:":
+                os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         if ":memory:" in url:
             kwargs["poolclass"] = StaticPool
             kwargs["connect_args"] = {"check_same_thread": False}
