@@ -1,72 +1,86 @@
-from typing import Optional
+"""Application configuration."""
+
 import os
+from dataclasses import dataclass
 
 
+def _env_str(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    return default if value is None else value
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    return default if value is None else int(value)
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    return default if value is None else float(value)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass
 class JobEngineConfig:
     # Database
     database_url: str = "sqlite:///./jobs.db"
-    
-    # Worker configuration
+
+    # Workers
     worker_count: int = 4
     worker_timeout: int = 300  # seconds
-    
-    # Job processing
+    poll_interval: float = 0.5  # seconds
+
+    # Retry policy
     max_retries: int = 3
-    initial_backoff: float = 1.0  # seconds
-    max_backoff: float = 60.0  # seconds
+    initial_backoff: float = 1.0
+    max_backoff: float = 60.0
     retry_jitter: bool = True
-    
+
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    
-    # Performance
-    job_batch_size: int = 100
-    health_check_interval: int = 30  # seconds
-    
+    api_prefix: str = "/api/v1"
+
+    # Scheduler
+    health_check_interval: float = 1.0  # seconds
+
     # Logging
     log_level: str = "INFO"
-    log_format: str = "json"
-    
+
     # Security
-    secret_key: str = os.environ.get("SECRET_KEY", "your-secret-key-here")
+    secret_key: str = ""
     api_key_header: str = "X-API-Key"
-    
+
+    # Testing / operations
+    enable_workers: bool = True
+    recover_stale_jobs: bool = True
+
     @classmethod
-    def from_env(cls):
-        """Create config from environment variables"""
-        config = cls()
-        
-        # Override with environment variables if they exist
-        if os.environ.get("DATABASE_URL"):
-            config.database_url = os.environ.get("DATABASE_URL")
-        if os.environ.get("WORKER_COUNT"):
-            config.worker_count = int(os.environ.get("WORKER_COUNT"))
-        if os.environ.get("WORKER_TIMEOUT"):
-            config.worker_timeout = int(os.environ.get("WORKER_TIMEOUT"))
-        if os.environ.get("MAX_RETRIES"):
-            config.max_retries = int(os.environ.get("MAX_RETRIES"))
-        if os.environ.get("INITIAL_BACKOFF"):
-            config.initial_backoff = float(os.environ.get("INITIAL_BACKOFF"))
-        if os.environ.get("MAX_BACKOFF"):
-            config.max_backoff = float(os.environ.get("MAX_BACKOFF"))
-        if os.environ.get("RETRY_JITTER"):
-            config.retry_jitter = os.environ.get("RETRY_JITTER").lower() == "true"
-        if os.environ.get("API_HOST"):
-            config.api_host = os.environ.get("API_HOST")
-        if os.environ.get("API_PORT"):
-            config.api_port = int(os.environ.get("API_PORT"))
-        if os.environ.get("JOB_BATCH_SIZE"):
-            config.job_batch_size = int(os.environ.get("JOB_BATCH_SIZE"))
-        if os.environ.get("HEALTH_CHECK_INTERVAL"):
-            config.health_check_interval = int(os.environ.get("HEALTH_CHECK_INTERVAL"))
-        if os.environ.get("LOG_LEVEL"):
-            config.log_level = os.environ.get("LOG_LEVEL")
-        if os.environ.get("LOG_FORMAT"):
-            config.log_format = os.environ.get("LOG_FORMAT")
-        if os.environ.get("SECRET_KEY"):
-            config.secret_key = os.environ.get("SECRET_KEY")
-        if os.environ.get("API_KEY_HEADER"):
-            config.api_key_header = os.environ.get("API_KEY_HEADER")
-            
-        return config
+    def from_env(cls) -> "JobEngineConfig":
+        return cls(
+            database_url=_env_str("DATABASE_URL", cls.database_url),
+            worker_count=_env_int("WORKER_COUNT", cls.worker_count),
+            worker_timeout=_env_int("WORKER_TIMEOUT", cls.worker_timeout),
+            poll_interval=_env_float("POLL_INTERVAL", cls.poll_interval),
+            max_retries=_env_int("MAX_RETRIES", cls.max_retries),
+            initial_backoff=_env_float("INITIAL_BACKOFF", cls.initial_backoff),
+            max_backoff=_env_float("MAX_BACKOFF", cls.max_backoff),
+            retry_jitter=_env_bool("RETRY_JITTER", cls.retry_jitter),
+            api_host=_env_str("API_HOST", cls.api_host),
+            api_port=_env_int("API_PORT", cls.api_port),
+            api_prefix=_env_str("API_PREFIX", cls.api_prefix),
+            health_check_interval=_env_float(
+                "HEALTH_CHECK_INTERVAL", cls.health_check_interval
+            ),
+            log_level=_env_str("LOG_LEVEL", cls.log_level),
+            secret_key=_env_str("SECRET_KEY", cls.secret_key),
+            api_key_header=_env_str("API_KEY_HEADER", cls.api_key_header),
+            enable_workers=_env_bool("ENABLE_WORKERS", cls.enable_workers),
+            recover_stale_jobs=_env_bool("RECOVER_STALE_JOBS", cls.recover_stale_jobs),
+        )

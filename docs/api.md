@@ -1,0 +1,121 @@
+# API reference
+
+Base path: `/api/v1`. Interactive docs: `/docs`, schema: `/openapi.json`.
+
+Authentication is **off by default**. If `SECRET_KEY` is set, write endpoints
+(`POST /jobs`, `POST /jobs/{id}/cancel`, `DELETE /jobs/{id}`) require the header
+named by `API_KEY_HEADER` (default `X-API-Key`) to match it. Read endpoints
+stay public.
+
+## POST /jobs
+
+Submit a job. Returns `201`.
+
+```json
+{
+  "payload": "{\"task\":\"sleep\",\"seconds\":1}",
+  "priority": "high",
+  "idempotency_key": "order-1234",
+  "timeout": 60,
+  "max_retries": 5
+}
+```
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `payload` | string | required, 1–100000 chars |
+| `priority` | enum | `low` \| `normal` \| `high` \| `critical`, default `normal` |
+| `idempotency_key` | string | optional, ≤64 chars, unique |
+| `timeout` | int | optional, 1–86400 s, default from `WORKER_TIMEOUT` |
+| `max_retries` | int | optional, 0–100, default from `MAX_RETRIES` |
+
+Submitting again with the same `idempotency_key` returns the **existing** job
+with `201` — it does not create a duplicate and does not reset its state. The
+guarantee is enforced by a unique index, so it also holds when requests race.
+
+Validation failures return `422`.
+
+## GET /jobs
+
+Query parameters: `status`, `limit` (1–100, default 50), `offset` (≥0).
+
+```json
+{ "jobs": [ ... ], "total": 42, "limit": 50, "offset": 0 }
+```
+
+Ordered by `created_at DESC, id DESC`.
+
+## GET /jobs/{job_id}
+
+Returns the job, or `404` if unknown. `job_id` is a UUID string.
+
+## POST /jobs/{job_id}/cancel
+
+Cancels a job that is `pending`, `claimed`, `running` or `retrying`. Returns
+`{"message": "Job cancelled successfully"}`.
+
+* `404` — unknown job
+* `409` — job is already in a terminal state
+  (`completed`, `failed`, `cancelled`, `dead_letter`)
+
+Cancelling a `pending`/`retrying` job prevents it from starting. Cancelling a
+`running` job is durable — the worker cannot overwrite `cancelled` with
+`completed` — but it is not preemptive: the payload finishes and its result is
+discarded.
+
+`DELETE /jobs/{job_id}` is an alias with identical semantics.
+
+## GET /health
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-11-21T21:30:00",
+  "version": "1.0.0",
+  "database_status": "ok",
+  "worker_status": "running"
+}
+```
+
+`status` is `degraded` when the database is unreachable, or when workers are
+disabled/stopped but `ENABLE_WORKERS` is true.
+
+## GET /stats
+
+Aggregate counters: `total_jobs`, `pending_jobs`, `claimed_jobs`,
+`running_jobs`, `completed_jobs`, `failed_jobs`, `cancelled_jobs`,
+`retrying_jobs`, `dead_letter_jobs`, `oldest_pending_job`, plus a
+`status_counts` map.
+
+## GET /metrics
+
+Everything from `/stats` plus `average_execution_time`, `worker_count`,
+`active_workers`, `processor_running`, `worker_id`,
+`processed_by_this_processor`, `failed_by_this_processor`.
+
+## Job object
+
+```json
+{
+  "id": 1,
+  "job_id": "0f5c…",
+  "idempotency_key": "order-1234",
+  "payload": "{\"task\":\"noop\"}",
+  "priority": "high",
+  "status": "completed",
+  "created_at": "2026-11-21T21:30:00.123456",
+  "started_at": "2026-11-21T21:30:00.200000",
+  "claimed_at": "2026-11-21T21:30:00.199000",
+  "completed_at": "2026-11-21T21:30:00.310000",
+  "retry_count": 0,
+  "max_retries": 3,
+  "next_retry_at": null,
+  "worker_id": "worker-1",
+  "timeout": 300,
+  "result": "noop",
+  "error": null,
+  "execution_time": 0.11
+}
+```
+
+Timestamps are UTC without a timezone suffix.

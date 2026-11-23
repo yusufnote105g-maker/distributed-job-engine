@@ -1,83 +1,118 @@
+"""Shared pytest fixtures.
+
+The API is exercised through httpx's ASGI transport with the application
+lifespan driven explicitly, so startup/shutdown logic is covered too.
+"""
+
+import httpx
 import pytest
-import asyncio
-import tempfile
-import os
-from pathlib import Path
-from unittest.mock import AsyncMock
 
 from src.config import JobEngineConfig
+from src.main import create_app
 from src.services.database import DatabaseService
 from src.services.job_processor import JobProcessor
-from src.models import JobStatus, JobPriority
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture
-def temp_db():
-    """Create a temporary database for testing"""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        tmp_path = tmp.name
-    
-    # Use in-memory SQLite for faster tests
-    config = JobEngineConfig(database_url="sqlite:///:memory:")
-    
-    yield config
-    
-    # Cleanup
-    if os.path.exists(tmp_path):
-        os.unlink(tmp_path)
+def make_config(tmp_path, **overrides) -> JobEngineConfig:
+    defaults = dict(
+        database_url=f"sqlite:///{tmp_path / 'jobs.db'}",
+        worker_count=2,
+        poll_interval=0.01,
+        health_check_interval=0.01,
+        initial_backoff=0.02,
+        max_backoff=0.1,
+        max_retries=2,
+        log_level="WARNING",
+    )
+    defaults.update(overrides)
+    return JobEngineConfig(**defaults)
 
 
 @pytest.fixture
-async def db_service(temp_db):
-    """Create a database service for testing"""
-    service = DatabaseService(temp_db)
-    await service._init_db()
+def config(tmp_path):
+    return make_config(tmp_path)
+
+
+@pytest.fixture
+async def db(config):
+    service = DatabaseService(config)
+    await service.initialize()
     yield service
-    await service.engine.dispose()
+    await service.close()
 
 
 @pytest.fixture
-async def job_processor(db_service, temp_db):
-    """Create a job processor for testing"""
-    processor = JobProcessor(temp_db, db_service)
-    yield processor
+async def processor(config, db):
+    instance = JobProcessor(config, db)
+    yield instance
+    await instance.stop()
 
 
 @pytest.fixture
-async def mock_http_client():
-    """Mock HTTP client for API testing"""
-    from httpx import AsyncClient
-    
-    client = AsyncClient(app=src.main.app, base_url="http://test")
-    yield client
-    await client.aclose()
+async def api_client(tmp_path):
+    """API client with background workers disabled (deterministic API tests)."""
+    config = make_config(tmp_path, worker_count=0, enable_workers=False)
+    db_service = DatabaseService(config)
+    processor = JobProcessor(config, db_service)
+    await db_service.initialize()
+
+    app = create_app(config)
+    app.state.db_service = db_service
+    app.state.job_processor = processor
+    app.state.config = config
+    app.state.version = "1.0.0"
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            yield client
+    finally:
+        await processor.stop()
+        await db_service.close()
 
 
 @pytest.fixture
-def sample_jobs():
-    """Sample job data for testing"""
-    return [
-        {
-            "payload": "test job 1",
-            "priority": JobPriority.NORMAL,
-            "idempotency_key": "test-1"
-        },
-        {
-            "payload": "test job 2",
-            "priority": JobPriority.HIGH,
-            "idempotency_key": "test-2"
-        },
-        {
-            "payload": "test job 3",
-            "priority": JobPriority.CRITICAL,
-            "idempotency_key": "test-3"
-        }
-    ]
+async def api_client_factory(tmp_path):
+    """Factory building an API client for an arbitrary config."""
+    clients = []
+
+    async def factory(**overrides):
+        config = make_config(tmp_path, **overrides)
+        db_service = DatabaseService(config)
+        processor = JobProcessor(config, db_service)
+        await db_service.initialize()
+
+        app = create_app(config)
+        app.state.db_service = db_service
+        app.state.job_processor = processor
+        app.state.config = config
+        app.state.version = "1.0.0"
+
+        transport = httpx.ASGITransport(app=app)
+        client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+        clients.append((client, db_service, processor))
+        return client
+
+    yield factory
+
+    for client, db_service, processor in clients:
+        await client.aclose()
+        await processor.stop()
+        await db_service.close()
+
+
+@pytest.fixture
+async def running_engine(tmp_path):
+    """A fully started engine (workers on) plus its database service."""
+    config = make_config(tmp_path, worker_count=4)
+    service = DatabaseService(config)
+    await service.initialize()
+    processor = JobProcessor(config, service)
+    await processor.start()
+    try:
+        yield config, service, processor
+    finally:
+        await processor.stop()
+        await service.close()

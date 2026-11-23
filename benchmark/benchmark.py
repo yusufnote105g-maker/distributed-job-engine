@@ -1,330 +1,184 @@
 #!/usr/bin/env python3
-"""
-Benchmark script for Distributed Job Engine
+"""Reproducible benchmark for the Distributed Job Engine.
 
-This script measures:
-- Jobs processed per second
-- Average execution latency
-- P95 latency
-- Worker utilization
-- Database contention
+Runs the engine in-process against a throwaway SQLite database, so results do
+not depend on a separately started server.
 
 Usage:
-    python benchmark.py --jobs 1000 --workers 4 --duration 60
+    python3 benchmark/benchmark.py --jobs 500 --workers 4 --sleep 0.01
 """
 
-import asyncio
 import argparse
-import time
-import statistics
+import asyncio
 import json
-from datetime import datetime
-from typing import List, Dict, Any
-import httpx
-import psutil
-import os
+import statistics
+import tempfile
+import time
+from pathlib import Path
 
 from src.config import JobEngineConfig
 from src.services.database import DatabaseService
 from src.services.job_processor import JobProcessor
 
-
-class BenchmarkMetrics:
-    def __init__(self):
-        self.jobs_completed = 0
-        self.jobs_failed = 0
-        self.jobs_cancelled = 0
-        self.latencies = []
-        self.start_time = time.time()
-        self.end_time = None
-        self.worker_utilization = []
-        self.database_operations = 0
-        
-    def add_job_result(self, success: bool, latency: float):
-        if success:
-            self.jobs_completed += 1
-        else:
-            self.jobs_failed += 1
-        self.latencies.append(latency)
-        
-    def add_cancelled_job(self):
-        self.jobs_cancelled += 1
-        
-    def record_worker_utilization(self, utilization: float):
-        self.worker_utilization.append(utilization)
-        
-    def record_database_operation(self):
-        self.database_operations += 1
-        
-    def get_stats(self) -> Dict[str, Any]:
-        if not self.latencies:
-            return {
-                "total_jobs": 0,
-                "jobs_completed": 0,
-                "jobs_failed": 0,
-                "jobs_cancelled": 0,
-                "throughput_jobs_per_sec": 0,
-                "avg_latency_ms": 0,
-                "p95_latency_ms": 0,
-                "min_latency_ms": 0,
-                "max_latency_ms": 0,
-                "avg_worker_utilization": 0,
-                "total_database_operations": 0,
-                "duration_seconds": 0
-            }
-        
-        duration = self.end_time - self.start_time if self.end_time else time.time() - self.start_time
-        
-        return {
-            "total_jobs": len(self.latencies) + self.jobs_cancelled,
-            "jobs_completed": self.jobs_completed,
-            "jobs_failed": self.jobs_failed,
-            "jobs_cancelled": self.jobs_cancelled,
-            "throughput_jobs_per_sec": len(self.latencies) / duration,
-            "avg_latency_ms": statistics.mean(self.latencies) * 1000,
-            "p95_latency_ms": statistics.quantiles(self.latencies, n=20)[18] * 1000,  # 95th percentile
-            "min_latency_ms": min(self.latencies) * 1000,
-            "max_latency_ms": max(self.latencies) * 1000,
-            "avg_worker_utilization": statistics.mean(self.worker_utilization) if self.worker_utilization else 0,
-            "total_database_operations": self.database_operations,
-            "duration_seconds": duration
-        }
+TERMINAL = {"completed", "failed", "dead_letter", "cancelled"}
 
 
-class JobSubmitter:
-    def __init__(self, api_url: str, num_jobs: int):
-        self.api_url = api_url
-        self.num_jobs = num_jobs
-        self.submitted_jobs = []
-        self.client = httpx.AsyncClient(timeout=30.0)
-        
-    async def submit_jobs(self) -> List[str]:
-        """Submit all jobs and return job IDs"""
-        job_ids = []
-        
-        for i in range(self.num_jobs):
-            payload = f"benchmark_job_{i}_{int(time.time())}"
-            
-            try:
-                response = await self.client.post(
-                    f"{self.api_url}/api/v1/jobs",
-                    json={
-                        "payload": payload,
-                        "priority": "normal",
-                        "idempotency_key": f"benchmark_{i}"
-                    }
-                )
-                
-                if response.status_code == 201:
-                    job_data = response.json()
-                    job_ids.append(job_data["job_id"])
-                    self.submitted_jobs.append({
-                        "job_id": job_data["job_id"],
-                        "submitted_at": time.time()
-                    })
-                else:
-                    print(f"Failed to submit job {i}: {response.status_code}")
-                    
-            except Exception as e:
-                print(f"Error submitting job {i}: {e}")
-                
-        return job_ids
-    
-    async def check_job_status(self, job_id: str) -> Dict[str, Any]:
-        """Check the status of a specific job"""
-        try:
-            response = await self.client.get(f"{self.api_url}/api/v1/jobs/{job_id}")
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {"error": f"HTTP {response.status_code}"}
-        except Exception as e:
-            return {"error": str(e)}
-    
-    async def get_metrics(self) -> Dict[str, Any]:
-        """Get system metrics"""
-        try:
-            response = await self.client.get(f"{self.api_url}/api/v1/metrics")
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {"error": f"HTTP {response.status_code}"}
-        except Exception as e:
-            return {"error": str(e)}
-    
-    async def close(self):
-        await self.client.aclose()
+def percentile(values, pct):
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, int(round((pct / 100) * (len(ordered) - 1))))
+    return ordered[index]
 
 
-class SystemMonitor:
-    def __init__(self, interval: float = 1.0):
-        self.interval = interval
-        self.running = False
-        
-    async def monitor_worker_utilization(self, job_processor: JobProcessor) -> float:
-        """Monitor worker utilization"""
-        if not job_processor.workers:
-            return 0.0
-        
-        active_workers = 0
-        for worker in job_processor.workers:
-            if not worker.done():
-                active_workers += 1
-                
-        return active_workers / len(job_processor.workers)
-    
-    async def monitor_database_operations(self, db_service: DatabaseService) -> int:
-        """Monitor database operations"""
-        # This is a simplified implementation
-        # In a real system, you would track actual database operations
-        return 0
-    
-    async def monitor_system_resources(self) -> Dict[str, float]:
-        """Monitor system resources"""
-        cpu_percent = psutil.cpu_percent()
-        memory_percent = psutil.virtual_memory().percent
-        disk_percent = psutil.disk_usage('/').percent
-        
-        return {
-            "cpu_percent": cpu_percent,
-            "memory_percent": memory_percent,
-            "disk_percent": disk_percent
-        }
+def summarize(values):
+    if not values:
+        return {"count": 0, "avg": None, "p50": None, "p95": None, "max": None}
+    return {
+        "count": len(values),
+        "avg": round(statistics.fmean(values), 6),
+        "p50": round(percentile(values, 50), 6),
+        "p95": round(percentile(values, 95), 6),
+        "max": round(max(values), 6),
+    }
 
 
-async def run_benchmark(args):
-    """Run the benchmark"""
-    print(f"Starting benchmark with {args.jobs} jobs, {args.workers} workers, duration: {args.duration}s")
-    
-    # Initialize services
-    config = JobEngineConfig()
-    config.worker_count = args.workers
-    config.max_retries = 0  # Disable retries for benchmark
-    
-    db_service = DatabaseService(config)
-    await db_service._init_db()
-    
-    job_processor = JobProcessor(config, db_service)
-    
-    # Start job processor
-    await job_processor.start()
-    
-    # Wait for services to be ready
-    await asyncio.sleep(2)
-    
-    # Initialize metrics
-    metrics = BenchmarkMetrics()
-    monitor = SystemMonitor()
-    
-    # Submit jobs
-    print("Submitting jobs...")
-    submitter = JobSubmitter(f"http://{config.api_host}:{config.api_port}", args.jobs)
-    job_ids = await submitter.submit_jobs()
-    
-    print(f"Submitted {len(job_ids)} jobs")
-    
-    # Monitor job processing
-    print("Monitoring job processing...")
-    start_time = time.time()
-    
-    async def monitor_progress():
-        """Monitor progress and collect metrics"""
-        while time.time() - start_time < args.duration:
-            # Check job status
-            for job_info in metrics.submitted_jobs[:]:  # Use a copy to allow modification
-                job_id = job_info["job_id"]
-                
-                job_data = await submitter.check_job_status(job_id)
-                
-                if "error" not in job_data:
-                    if job_data["status"] in ["completed", "failed", "dead_letter"]:
-                        latency = time.time() - job_info["submitted_at"]
-                        success = job_data["status"] == "completed"
-                        metrics.add_job_result(success, latency)
-                        metrics.submitted_jobs.remove(job_info)
-                        
-                        # Record worker utilization
-                        utilization = await monitor.monitor_worker_utilization(job_processor)
-                        metrics.record_worker_utilization(utilization)
-                        
-                        # Record database operations
-                        await monitor.monitor_database_operations(db_service)
-                        metrics.record_database_operation()
-                        
-                        print(f"Job {job_id} completed in {latency:.3f}s (status: {job_data['status']})")
-    
-    # Start monitoring
-    monitor_task = asyncio.create_task(monitor_progress())
-    
-    # Wait for benchmark duration
-    await asyncio.sleep(args.duration)
-    
-    # Stop monitoring
-    metrics.end_time = time.time()
-    monitor_task.cancel()
-    
-    try:
-        await monitor_task
-    except asyncio.CancelledError:
-        pass
-    
-    # Get final metrics
-    final_metrics = await submitter.get_metrics()
-    
-    # Calculate final statistics
-    stats = metrics.get_stats()
-    
-    # Print results
-    print("\n=== BENCHMARK RESULTS ===")
-    print(f"Total duration: {stats['duration_seconds']:.2f}s")
-    print(f"Jobs submitted: {len(job_ids)}")
-    print(f"Jobs completed: {stats['jobs_completed']}")
-    print(f"Jobs failed: {stats['jobs_failed']}")
-    print(f"Jobs cancelled: {stats['jobs_cancelled']}")
-    print(f"Throughput: {stats['throughput_jobs_per_sec']:.2f} jobs/sec")
-    print(f"Average latency: {stats['avg_latency_ms']:.2f}ms")
-    print(f"P95 latency: {stats['p95_latency_ms']:.2f}ms")
-    print(f"Min latency: {stats['min_latency_ms']:.2f}ms")
-    print(f"Max latency: {stats['max_latency_ms']:.2f}ms")
-    print(f"Average worker utilization: {stats['avg_worker_utilization']:.2%}")
-    print(f"Total database operations: {stats['total_database_operations']}")
-    print(f"System metrics: {final_metrics}")
-    
-    # Save results to file
-    results = {
-        "timestamp": datetime.utcnow().isoformat(),
+async def run(args) -> dict:
+    db_path = Path(args.db) if args.db else Path(
+        tempfile.mkdtemp(prefix="job-engine-bench-")
+    ) / "bench.db"
+
+    config = JobEngineConfig(
+        database_url=f"sqlite:///{db_path}",
+        worker_count=args.workers,
+        poll_interval=0.005,
+        health_check_interval=0.05,
+        max_retries=2,
+        initial_backoff=0.05,
+        max_backoff=0.5,
+        log_level="ERROR",
+    )
+
+    db = DatabaseService(config)
+    await db.initialize()
+    processor = JobProcessor(config, db)
+    await processor.start()
+
+    payload = json.dumps({"task": "sleep", "seconds": args.sleep})
+
+    submit_latencies = []
+    job_ids = []
+    submit_started = time.perf_counter()
+    for _ in range(args.jobs):
+        started = time.perf_counter()
+        job = await processor.submit_job(payload=payload)
+        submit_latencies.append(time.perf_counter() - started)
+        job_ids.append(job["job_id"])
+    submit_elapsed = time.perf_counter() - submit_started
+
+    processing_started = time.perf_counter()
+    deadline = processing_started + args.timeout
+    while time.perf_counter() < deadline:
+        stats = await db.stats()
+        if stats["pending_jobs"] == 0 and stats["claimed_jobs"] == 0 and stats["running_jobs"] == 0:
+            break
+        await asyncio.sleep(0.02)
+    processing_elapsed = time.perf_counter() - processing_started
+    total_elapsed = time.perf_counter() - submit_started
+
+    await processor.stop()
+
+    final = await db.stats()
+    execution_times = []
+    for job_id in job_ids:
+        job = await db.get_job(job_id)
+        if job and job["execution_time"] is not None:
+            execution_times.append(job["execution_time"])
+
+    processed = final["completed_jobs"] + final["failed_jobs"] + final["dead_letter_jobs"]
+    busy_time = sum(execution_times)
+    capacity = args.workers * processing_elapsed if processing_elapsed > 0 else 0
+
+    result = {
         "config": {
             "jobs": args.jobs,
             "workers": args.workers,
-            "duration": args.duration
+            "payload_sleep_seconds": args.sleep,
+            "database": str(db_path),
         },
-        "metrics": stats,
-        "system_metrics": final_metrics
+        "submission": {
+            "wall_seconds": round(submit_elapsed, 4),
+            "throughput_per_second": round(len(job_ids) / submit_elapsed, 2)
+            if submit_elapsed
+            else None,
+            "latency": summarize(submit_latencies),
+        },
+        "processing": {
+            "wall_seconds": round(processing_elapsed, 4),
+            "jobs_processed": processed,
+            "throughput_per_second": round(processed / processing_elapsed, 2)
+            if processing_elapsed
+            else None,
+            "execution_latency": summarize(execution_times),
+            "worker_utilization": round(min(busy_time / capacity, 1.0), 4)
+            if capacity
+            else 0.0,
+        },
+        "end_to_end": {
+            "wall_seconds": round(total_elapsed, 4),
+            "throughput_per_second": round(len(job_ids) / total_elapsed, 2)
+            if total_elapsed
+            else None,
+        },
+        "outcome": {
+            "completed": final["completed_jobs"],
+            "failed": final["failed_jobs"],
+            "dead_letter": final["dead_letter_jobs"],
+            "pending": final["pending_jobs"],
+        },
     }
-    
-    with open("benchmark_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-    
-    print("\nResults saved to benchmark_results.json")
-    
-    # Cleanup
-    await submitter.close()
-    await job_processor.stop()
-    await db_service.engine.dispose()
+
+    await db.close()
+    return result
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark Distributed Job Engine")
-    parser.add_argument("--jobs", type=int, default=1000, help="Number of jobs to submit")
-    parser.add_argument("--workers", type=int, default=4, help="Number of worker processes")
-    parser.add_argument("--duration", type=int, default=60, help="Benchmark duration in seconds")
-    parser.add_argument("--host", type=str, default="localhost", help="API host")
-    parser.add_argument("--port", type=int, default=8000, help="API port")
-    
+    parser = argparse.ArgumentParser(description="Benchmark the job engine")
+    parser.add_argument("--jobs", type=int, default=500)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--sleep", type=float, default=0.01, help="Simulated work per job (s)")
+    parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--db", default=None, help="SQLite file path (temp by default)")
+    parser.add_argument(
+        "--out", default="benchmark/benchmark_results.json", help="Output JSON path"
+    )
     args = parser.parse_args()
-    
-    # Run benchmark
-    asyncio.run(run_benchmark(args))
+
+    result = asyncio.run(run(args))
+    result["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    sub = result["submission"]
+    proc = result["processing"]
+    print("=" * 62)
+    print("DISTRIBUTED JOB ENGINE — BENCHMARK")
+    print("=" * 62)
+    print(f"Jobs / workers          : {args.jobs} / {args.workers}")
+    print(f"Submit throughput       : {sub['throughput_per_second']} jobs/s")
+    print(f"Submit latency p50/p95  : {sub['latency']['p50']}s / {sub['latency']['p95']}s")
+    print(f"Processing throughput   : {proc['throughput_per_second']} jobs/s")
+    print(f"End-to-end throughput   : {result['end_to_end']['throughput_per_second']} jobs/s")
+    print(
+        "Execution latency p50/p95: "
+        f"{proc['execution_latency']['p50']}s / {proc['execution_latency']['p95']}s"
+    )
+    print(f"Worker utilization      : {proc['worker_utilization'] * 100:.1f}%")
+    print(f"Outcome                 : {result['outcome']}")
+    print(f"Saved to                : {out_path}")
+    print("=" * 62)
 
 
 if __name__ == "__main__":

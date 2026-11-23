@@ -1,162 +1,142 @@
 # Distributed Job Engine
 
-Production-oriented distributed job engine built with FastAPI, SQLite, and comprehensive testing.
+An asynchronous job engine with a REST API, priority queue, concurrent
+workers, retries with exponential backoff, per-job timeouts, and durable
+storage in SQLite.
 
-## 🚀 Features
+Python ≥ 3.11 · FastAPI · SQLAlchemy 1.4 · SQLite (WAL)
 
-- **FastAPI REST API** with validation and pagination
-- **SQLite database** with concurrent access support
-- **Multiple workers** for parallel job processing
-- **Job priorities** and retry policies
-- **Timeout handling** and graceful shutdown
-- **Comprehensive testing** including race conditions
-- **Performance benchmarking** with metrics
-- **Docker containerization**
-- **GitHub Actions CI/CD**
+## What it does
 
-## 📋 Requirements
+* **Submit** jobs over HTTP with a priority (`low` → `critical`).
+* **Process** them with a pool of asyncio workers; jobs are claimed atomically,
+  so no job is ever handed to two workers.
+* **Retry** failures with exponential backoff + jitter, up to a per-job budget,
+  then move them to a dead-letter state.
+* **Time out** slow jobs and record why they failed.
+* **Recover** jobs left in `claimed`/`running` after a crash, on next startup.
+* **Deduplicate** submissions with an `idempotency_key` enforced by a unique
+  index.
+* **Observe** everything through `/health`, `/stats` and `/metrics`.
 
-- Python 3.11+
-- SQLite3
+## Quick start
 
-## 🛠️ Installation
-
-1. Clone the repository:
 ```bash
-git clone https://github.com/yusufnote105g-maker/distributed-job-engine.git
-cd distributed-job-engine
-```
-
-2. Install dependencies:
-```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+scripts/run.sh
 ```
 
-3. Run the application:
+Then:
+
 ```bash
-python -m src.main
+curl -s localhost:8000/api/v1/health
+curl -s -X POST localhost:8000/api/v1/jobs \
+     -H 'content-type: application/json' \
+     -d '{"payload":"{\"task\":\"sleep\",\"seconds\":1}","priority":"high"}'
+curl -s localhost:8000/api/v1/jobs
+curl -s localhost:8000/api/v1/metrics
 ```
 
-The API will be available at `http://localhost:8000`
+Interactive docs: <http://localhost:8000/docs>
 
-## 📊 API Endpoints
+## Configuration
 
-### Jobs
-- `POST /api/jobs` - Submit a new job
-- `GET /api/jobs` - List jobs with pagination
-- `GET /api/jobs/{job_id}` - Get job details
-- `DELETE /api/jobs/{job_id}` - Cancel a job
+All settings are environment variables (`src/config.py`).
 
-### System
-- `GET /api/health` - Health check
-- `GET /api/stats` - System statistics
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite:///./jobs.db` | SQLAlchemy URL (SQLite, WAL mode) |
+| `WORKER_COUNT` | `4` | concurrent worker tasks |
+| `WORKER_TIMEOUT` | `300` | default per-job timeout, seconds |
+| `POLL_INTERVAL` | `0.5` | idle poll interval, seconds |
+| `MAX_RETRIES` | `3` | default retry budget |
+| `INITIAL_BACKOFF` / `MAX_BACKOFF` | `1.0` / `60.0` | backoff bounds, seconds |
+| `RETRY_JITTER` | `true` | randomise backoff in `[0.5, 1.0] × delay` |
+| `HEALTH_CHECK_INTERVAL` | `1.0` | retry-sweep interval, seconds |
+| `API_HOST` / `API_PORT` | `0.0.0.0` / `8000` | bind address |
+| `API_PREFIX` | `/api/v1` | route prefix |
+| `SECRET_KEY` | *(empty)* | enables `X-API-Key` auth when set |
+| `API_KEY_HEADER` | `X-API-Key` | header name for the key |
+| `ENABLE_WORKERS` | `true` | run the worker pool in this process |
+| `RECOVER_STALE_JOBS` | `true` | requeue stuck jobs at startup |
+| `LOG_LEVEL` | `INFO` | logging level |
 
-## 🧪 Testing
+## API
 
-Run the test suite:
+Full reference: [`docs/api.md`](docs/api.md).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/jobs` | submit a job |
+| `GET` | `/api/v1/jobs` | list jobs (`status`, `limit`, `offset`) |
+| `GET` | `/api/v1/jobs/{job_id}` | fetch one job |
+| `POST` | `/api/v1/jobs/{job_id}/cancel` | cancel a job |
+| `DELETE` | `/api/v1/jobs/{job_id}` | cancel a job (alias) |
+| `GET` | `/api/v1/health` | liveness + dependency status |
+| `GET` | `/api/v1/stats` | counters |
+| `GET` | `/api/v1/metrics` | counters + worker info |
+
+## Payloads
+
+A payload is an opaque string. The bundled runner understands JSON objects with
+a `task` key — `noop`, `sleep`, `fail`, `flaky` — which is enough to exercise
+retries, timeouts and priorities. Everything else completes as an opaque blob.
+See [`docs/architecture.md`](docs/architecture.md#payload-execution) for how to
+plug in real work.
+
+## Tests
+
 ```bash
-pytest
+scripts/run_tests.sh            # or: python3 -m pytest
 ```
 
-Run specific test categories:
+The suite covers the HTTP contract, priority ordering, atomic claiming under
+parallelism, retry/backoff/dead-letter, timeouts, cancellation, idempotency
+races and crash recovery. Tests run against a temporary SQLite file and start
+real workers, so they exercise the same code paths as production.
+
+## Benchmark
+
 ```bash
-pytest tests/test_api.py
-pytest tests/test_concurrency.py
-pytest tests/test_retries_and_timeouts.py
+scripts/run_benchmark.sh 500 4 0.01   # jobs, workers, simulated work per job
 ```
 
-## 📈 Benchmarking
+Runs the engine in-process against a throwaway database and writes
+`benchmark/benchmark_results.json` with submit/processing throughput, p50/p95
+latency and worker utilisation. Numbers from this device are in
+[`docs/benchmark.md`](docs/benchmark.md).
 
-Run performance benchmark:
+## Docker
+
 ```bash
-python benchmark/benchmark.py
+docker build -t distributed-job-engine .
+docker run -p 8000:8000 -v job-data:/data distributed-job-engine
+# or
+docker compose up --build
 ```
 
-## 🐳 Docker
+## Documentation
 
-Build and run with Docker:
-```bash
-docker build -t job-engine .
-docker run -p 8000:8000 job-engine
-```
+* [`docs/architecture.md`](docs/architecture.md) — components, claiming algorithm, state machine
+* [`docs/api.md`](docs/api.md) — endpoints, fields, status codes
+* [`docs/database_schema.md`](docs/database_schema.md) — table, indexes, pragmas
+* [`docs/known_limitations.md`](docs/known_limitations.md) — honest limits (at-least-once, single writer, polling)
+* [`docs/security_analysis.md`](docs/security_analysis.md) — threat model and hardening steps
+* [`docs/benchmark.md`](docs/benchmark.md) — measured throughput and latency
 
-Or use Docker Compose:
-```bash
-docker-compose up
-```
-
-## 📁 Project Structure
+## Layout
 
 ```
 src/
-├── main.py              # Application entry point
-├── config.py            # Configuration management
-├── api/
-│   └── routes.py        # API endpoints
-├── models/
-│   └── job.py           # Database models
-├── services/
-│   ├── database.py      # Database service
-│   └── job_processor.py # Job processing logic
-└── utils/
-    └── logging.py       # Logging utilities
-
-tests/                   # Test suite
-benchmark/               # Performance benchmarks
-docs/                   # Documentation
-scripts/                # Utility scripts
+  main.py                 app factory + lifespan
+  config.py               env-driven settings
+  api/routes.py           HTTP layer
+  models/job.py           SQLAlchemy model + enums
+  services/database.py    data access, atomic claiming (asyncio.to_thread)
+  services/job_processor.py  workers, retries, scheduler
+tests/                    pytest suite
+benchmark/benchmark.py    reproducible benchmark
+docs/                     architecture and reference
 ```
-
-## 🔧 Configuration
-
-Environment variables:
-- `DATABASE_URL` - Database connection string
-- `WORKER_COUNT` - Number of worker processes (default: 4)
-- `WORKER_TIMEOUT` - Worker timeout in seconds (default: 300)
-- `MAX_RETRIES` - Maximum retry attempts (default: 3)
-- `API_PORT` - API port (default: 8000)
-
-## 📊 Performance
-
-The engine is optimized for:
-- High throughput job processing
-- Concurrent worker operations
-- Efficient database access with proper indexing
-- Memory-efficient job handling
-
-## 🔒 Security
-
-- Input validation using Pydantic
-- SQL injection protection
-- Secure API key authentication
-- Proper error handling
-
-## 📚 Documentation
-
-- [Architecture](docs/architecture.md)
-- [Database Schema](docs/database_schema.md)
-- [Security Analysis](docs/security_analysis.md)
-- [Known Limitations](docs/known_limitations.md)
-- [Production Risks](docs/production_risks.md)
-- [Dependencies](docs/dependencies.md)
-- [Optimization Guide](docs/optimization.md)
-
-## 🚀 Deployment
-
-1. Set up environment variables
-2. Configure database connection
-3. Set up reverse proxy (nginx recommended)
-4. Configure SSL certificates
-5. Set up monitoring and logging
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-## 📄 License
-
-This project is open source and available under the MIT License.

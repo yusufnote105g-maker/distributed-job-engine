@@ -47,6 +47,10 @@ Thumbs.db
 # Project specific
 jobs.db
 *.log
+# Local-only artifacts from earlier iterations
+legacy/
+test_minimal.py
+test_components.py
 .coverage
 htmlcov/
 .pytest_cache/

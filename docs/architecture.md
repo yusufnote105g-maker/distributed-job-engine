@@ -1,246 +1,132 @@
-# Distributed Job Engine - Architecture Documentation
+# Architecture
 
 ## Overview
 
-The Distributed Job Engine is a production-oriented distributed job processing engine built with FastAPI and SQLite. It provides reliable background job processing with support for priorities, retries, timeouts, and concurrent workers.
+The engine is a single Python process that hosts two things:
 
-## Architecture Components
+1. a **FastAPI application** exposing a REST API (`/api/v1`), and
+2. an **asyncio worker pool** plus a retry scheduler that live in the same
+   event loop and process jobs from a SQLite database.
 
-### 1. Core Components
+There is no separate broker (no Redis, no RabbitMQ). SQLite is the queue *and*
+the durable store. This keeps the system to one deployable unit while still
+giving atomic claiming, priority ordering and crash recovery.
 
-#### JobProcessor
-The main processing engine that manages job lifecycle:
-- **Job Submission**: Accepts new jobs with configurable priorities and timeouts
-- **Job Distribution**: Distributes jobs among multiple workers based on priority
-- **Job Execution**: Monitors job execution and handles timeouts
-- **Retry Logic**: Implements exponential backoff for failed jobs
-- **Graceful Shutdown**: Ensures all jobs are completed before shutdown
-
-#### DatabaseService
-Handles all database operations:
-- **Connection Management**: Manages SQLite database connections
-- **Transaction Safety**: Ensures atomic operations for job claiming
-- **Session Management**: Provides async database sessions
-- **Health Checks**: Monitors database connectivity
-
-#### API Routes
-RESTful API endpoints for job management:
-- **POST /jobs**: Submit new jobs
-- **GET /jobs/{job_id}: Get job status
-- **GET /jobs**: List jobs with pagination
-- **POST /jobs/{job_id}/cancel**: Cancel jobs
-- **GET /health**: Health check
-- **GET /metrics**: System metrics
-
-### 2. Data Model
-
-#### Job Entity
-```python
-class Job(Base):
-    id = Column(Integer, primary_key=True)
-    job_id = Column(String(36), unique=True, index=True)
-    idempotency_key = Column(String(64), index=True)
-    payload = Column(Text, nullable=False)
-    priority = Column(Enum(JobPriority), default=JobPriority.NORMAL)
-    status = Column(Enum(JobStatus), default=JobStatus.PENDING)
-    created_at = Column(DateTime, default=func.now())
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    retry_count = Column(Integer, default=0)
-    max_retries = Column(Integer, default=3)
-    next_retry_at = Column(DateTime, nullable=True)
-    worker_id = Column(String(64), nullable=True)
-    timeout = Column(Integer, default=300)
-    result = Column(Text, nullable=True)
-    error = Column(Text, nullable=True)
-    execution_time = Column(Float, nullable=True)
+```
+        HTTP clients
+             │
+             ▼
+   ┌──────────────────┐        ┌────────────────────────────┐
+   │  FastAPI (src/)  │        │  JobProcessor              │
+   │  routes.py       │        │  4 × asyncio worker tasks  │
+   └────────┬─────────┘        │  1 × retry scheduler task  │
+            │                  └───────────┬────────────────┘
+            └──────────┬───────────────────┘
+                       ▼
+              ┌─────────────────┐
+              │ DatabaseService │  SQLAlchemy 1.4 + asyncio.to_thread
+              └────────┬────────┘
+                       ▼
+                  jobs.db (SQLite, WAL)
 ```
 
-#### Job States
-- **PENDING**: Job is waiting to be processed
-- **CLAIMED**: Job has been claimed by a worker
-- **RUNNING**: Job is currently being processed
-- **COMPLETED**: Job completed successfully
-- **FAILED**: Job failed but can be retried
-- **CANCELLED**: Job was cancelled by user
-- **RETRYING**: Job failed and is scheduled for retry
-- **DEAD_LETTER**: Job failed permanently after max retries
+## Components
 
-#### Job Priorities
-- **CRITICAL**: Highest priority, processed first
-- **HIGH**: High priority
-- **NORMAL**: Default priority
-- **LOW**: Lowest priority
+### `src/main.py`
 
-### 3. Concurrency Model
+* `create_app(config)` builds the FastAPI app and wires the lifespan:
+  initialise the database, optionally start the worker pool, expose services
+  on `app.state`, and shut everything down on exit.
+* Startup also **requeues stale jobs** (rows left in `claimed`/`running` by a
+  previous crash) so they are not lost.
+* `config.enable_workers=False` runs the API without workers — used by the
+  API test-suite to keep assertions deterministic.
 
-#### Worker Architecture
-- Multiple independent worker processes
-- Each worker polls for available jobs
-- Jobs are claimed atomically to prevent race conditions
-- Workers process jobs independently with no shared state
+### `src/services/database.py`
 
-#### Job Claiming Mechanism
-1. Worker queries for available jobs
-2. Uses `FOR UPDATE` to lock the job row
-3. Updates job status to CLAIMED atomically
-4. Only one worker can claim each job
+Every method returns plain dictionaries, so no ORM object ever escapes the
+service and there are no lazy-load surprises after commit.
 
-#### Race Condition Prevention
-- Database-level row locking
-- Atomic job status updates
-- Idempotency keys for duplicate prevention
-- Transaction isolation for concurrent operations
+Claiming is the critical section:
 
-### 4. Error Handling and Recovery
+```sql
+UPDATE jobs
+   SET status='claimed', worker_id=?, claimed_at=?, started_at=?, next_retry_at=NULL
+ WHERE id = (SELECT id FROM jobs
+              WHERE status='pending'
+                AND (next_retry_at IS NULL OR next_retry_at <= now)
+              ORDER BY priority_rank, created_at, id
+              LIMIT 1)
+   AND status='pending';
+```
 
-#### Retry Strategy
-- Exponential backoff with jitter
-- Configurable maximum retry attempts
-- Automatic retry scheduling
-- Dead letter queue for permanently failed jobs
+The `AND status='pending'` guard on the UPDATE means that if two workers pick
+the same candidate row, only the one whose UPDATE actually changes the row gets
+`rowcount == 1`; the loser returns `None` and polls again. This is what makes
+concurrent claiming safe without a separate lock table.
 
-#### Timeout Handling
-- Per-job timeout configuration
-- Automatic timeout detection
-- Graceful failure on timeout
-- Timeout cancellation of running jobs
+SQLite is opened with `journal_mode=WAL`, `busy_timeout=5000` and
+`synchronous=NORMAL`, which allows concurrent readers while a writer holds the
+lock.
 
-#### Crash Recovery
-- Jobs survive application restarts
-- In-progress jobs are retried
-- Failed jobs are automatically rescheduled
-- No data loss on application failure
+### `src/services/job_processor.py`
 
-### 5. Performance Considerations
+* `_worker(name)` — loop: claim → process → repeat; sleeps `poll_interval`
+  when the queue is empty; survives unexpected exceptions.
+* `_process(job)` — marks the job `running`, executes the payload under
+  `asyncio.wait_for(timeout)`, then writes `completed`, `failed` (timeout), or
+  schedules a retry.
+* `_handle_failure` — increments `retry_count`; while
+  `retry_count <= max_retries` the job becomes `retrying` with
+  `next_retry_at = now + backoff`; after that it becomes `dead_letter`.
+* `_scheduler()` — periodically promotes `retrying` jobs whose backoff has
+  elapsed back to `pending`.
+* `stop()` — cancels all tasks, awaits them, and is idempotent.
 
-#### Database Optimization
-- Indexes on frequently queried fields
-- Efficient job ordering by priority and creation time
-- Connection pooling for better performance
-- Minimal locking duration
+### Payload execution
 
-#### Memory Usage
-- Lightweight SQLite database
-- Efficient job serialization
-- No in-memory job queues
-- Minimal worker memory footprint
+The payload is an opaque string. If it parses as a JSON object with a `task`
+key, a small built-in runner is used (useful for tests and benchmarks):
 
-#### Scalability
-- Horizontal scaling via multiple workers
-- Database remains the bottleneck (as designed)
-- No external dependencies
-- Simple deployment model
+| Payload | Behaviour |
+| --- | --- |
+| `{"task":"noop"}` | completes immediately |
+| `{"task":"sleep","seconds":1.5}` | sleeps, then completes |
+| `{"task":"fail","message":"boom"}` | always raises |
+| `{"task":"flaky","fail_times":2}` | fails while `retry_count < fail_times`, then completes |
 
-### 6. Security Features
+Any other payload succeeds without side effects and is reported as
+`processed payload (N bytes)`. Real workloads replace `_execute_payload` with
+their own dispatcher.
 
-#### Input Validation
-- Payload size limits
-- Priority validation
-- Timeout bounds checking
-- Idempotency key validation
+## State machine
 
-#### API Security
-- Optional API key authentication
-- Configurable secret key
-- Request size limits
-- Rate limiting capabilities
+```
+pending ──claim──▶ claimed ──▶ running ──▶ completed
+   ▲                  │            │
+   │                  │            ├──▶ failed (timeout / non-retryable)
+   │                  ▼            ▼
+   │              cancelled     retrying ──backoff elapsed──▶ pending
+   │                                │
+   └────────────────────────────────┴──▶ dead_letter (retries exhausted)
+```
 
-#### Database Security
-- No hardcoded credentials
-- Environment variable support
-- Secure default configuration
-- No sensitive data logging
+`cancelled` and `dead_letter` are terminal. `failed` is terminal for timeouts
+and for jobs whose retry budget is already exhausted; retryable failures go to
+`retrying` instead.
 
-### 7. Monitoring and Observability
+## Concurrency model
 
-#### Metrics Collection
-- Job status counts
-- Processing times
-- Worker utilization
-- Throughput measurements
+* All I/O is `async`; one event loop per process.
+* Workers are `asyncio.Task`s, so a worker waiting on `sleep` does not block
+  others.
+* Cross-process safety comes from the atomic UPDATE above plus WAL, not from
+  in-process locks. Several processes may share the same database file, though
+  SQLite serialises writers (see `known_limitations.md`).
 
-#### Health Checks
-- Database connectivity
-- Worker status
-- System resources
-- API availability
+## Scaling out
 
-#### Logging
-- Structured logging with JSON format
-- Job lifecycle events
-- Error tracking
-- Performance metrics
-
-### 8. Configuration
-
-#### Environment Variables
-- `DATABASE_URL`: Database connection string
-- `WORKER_COUNT`: Number of worker processes
-- `MAX_RETRIES`: Maximum retry attempts
-- `INITIAL_BACKOFF`: Initial retry delay
-- `API_KEY`: Optional API key for authentication
-
-#### Runtime Configuration
-- Worker timeout settings
-- Job batch size
-- Health check intervals
-- Log levels and formats
-
-### 9. Deployment
-
-#### Requirements
-- Python 3.11+
-- SQLite (no external dependencies)
-- Network access for API endpoints
-- Sufficient CPU for worker processes
-
-#### Deployment Options
-- Single instance with multiple workers
-- Multiple instances behind load balancer
-- Containerized deployment (Docker)
-- Cloud deployment (AWS, GCP, Azure)
-
-#### Resource Requirements
-- CPU: 1 core per worker + system overhead
-- Memory: ~50MB per worker + database
-- Storage: Database file grows with job history
-- Network: Minimal for local deployment
-
-### 10. Known Limitations
-
-#### Database Limitations
-- SQLite is not designed for high concurrency
-- Single writer bottleneck
-- No built-in clustering
-- Limited scalability for very high throughput
-
-#### Architecture Limitations
-- Single point of failure at database level
-- No distributed coordination
-- Limited job history management
-- No built-in job dependencies
-
-#### Operational Limitations
-- Manual job history cleanup
-- No built-in monitoring dashboard
-- Limited configuration management
-- No built-in backup/recovery
-
-### 11. Future Enhancements
-
-#### Planned Improvements
-- PostgreSQL/MySQL support for better scalability
-- Redis for job queuing and coordination
-- Built-in monitoring dashboard
-- Job dependency support
-- Scheduled jobs support
-- Job history management
-
-#### Scaling Considerations
-- Database sharding for horizontal scaling
-- Worker pools for better resource utilization
-- Load balancing for multiple instances
-- Queue-based architecture for higher throughput
-
-This architecture provides a solid foundation for reliable job processing with good performance characteristics for most use cases. The simplicity of the design makes it easy to understand, deploy, and maintain while providing robust functionality for background job processing.
+The design is stateless apart from SQLite, so running several containers
+against one database file works for moderate load. Beyond that, the database
+becomes the bottleneck — the documented upgrade path is Postgres with
+`SELECT ... FOR UPDATE SKIP LOCKED`.
