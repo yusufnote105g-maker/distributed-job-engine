@@ -127,6 +127,7 @@ docker compose up --build
 * [`docs/database_schema.md`](docs/database_schema.md) — table, indexes, pragmas
 * [`docs/known_limitations.md`](docs/known_limitations.md) — honest limits (at-least-once, single writer, polling)
 * [`docs/security_analysis.md`](docs/security_analysis.md) — threat model and hardening steps
+* [`SECURITY.md`](SECURITY.md) — vulnerability reporting and deployment checklist
 * [`docs/benchmark.md`](docs/benchmark.md) — measured throughput and latency
 
 ## Layout

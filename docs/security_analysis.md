@@ -12,7 +12,7 @@ an API gateway.
 | Area | Control |
 | --- | --- |
 | Transport | None built in — terminate TLS at a reverse proxy |
-| Authentication | Optional shared key in `X-API-Key`; compared against `SECRET_KEY`; empty key disables auth |
+| Authentication | Optional shared key in `X-API-Key`; compared in constant time (`hmac.compare_digest`) against `SECRET_KEY`; empty key disables auth |
 | Input validation | Pydantic models: payload length, enum priority, timeout 1–86400, retries 0–100, idempotency key ≤64 |
 | SQL injection | All access goes through SQLAlchemy Core constructs with bound parameters; no string-formatted SQL in `src/` |
 | Error leakage | 5xx responses return a generic message; stack traces go to the server log only |
@@ -25,8 +25,9 @@ an API gateway.
 port can enqueue jobs. Mitigation: set `SECRET_KEY` and keep the service
 private.
 
-**Static key comparison.** `==` is not constant-time. The exposure is small
-(network jitter dominates) but `secrets.compare_digest` would be correct.
+**Static key comparison.** Keys are compared with `hmac.compare_digest`, so the
+comparison is constant-time. The remaining weakness is that the key is shared,
+long-lived and not rotated automatically.
 
 **No rate limiting.** A client can submit jobs until the database or memory
 fills. Mitigation: rate-limit at the proxy, cap `total` pending jobs, or add a
@@ -51,7 +52,7 @@ are not logged, which keeps accidental secret leakage low.
 
 1. Set `SECRET_KEY` and terminate TLS in front of the service.
 2. Add per-client rate limiting and a cap on pending jobs.
-3. Use `secrets.compare_digest` for key comparison.
+3. Rotate the shared key periodically and keep it out of source control.
 4. Restrict CORS to known origins.
 5. Move to Postgres if more than one writer node is needed.
 6. Ship logs and metrics to a central system; add alerting on `dead_letter`
