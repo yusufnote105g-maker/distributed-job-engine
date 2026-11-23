@@ -129,6 +129,7 @@ docker compose up --build
 * [`docs/security_analysis.md`](docs/security_analysis.md) — threat model and hardening steps
 * [`SECURITY.md`](SECURITY.md) — vulnerability reporting and deployment checklist
 * [`docs/benchmark.md`](docs/benchmark.md) — measured throughput and latency
+* [`CHANGELOG.md`](CHANGELOG.md) — release history
 
 ## Layout
 
