@@ -1,9 +1,11 @@
 """Concurrency and race-condition tests against the real engine."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
+
+from src.utils import utcnow
 
 
 async def wait_until(predicate, timeout=10.0, interval=0.02):
@@ -110,7 +112,7 @@ async def test_due_retry_is_promoted(db):
         error="boom",
         execution_time=0.1,
         retry_count=1,
-        next_retry_at=datetime.utcnow() - timedelta(seconds=1),
+        next_retry_at=utcnow() - timedelta(seconds=1),
     )
     assert (await db.get_job(job["job_id"]))["status"] == "retrying"
 
@@ -128,7 +130,7 @@ async def test_future_retry_is_not_promoted(db):
         error="boom",
         execution_time=0.1,
         retry_count=1,
-        next_retry_at=datetime.utcnow() + timedelta(minutes=5),
+        next_retry_at=utcnow() + timedelta(minutes=5),
     )
     assert await db.promote_due_retries() == 0
     assert (await db.get_job(job["job_id"]))["status"] == "retrying"

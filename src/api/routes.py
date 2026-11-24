@@ -12,6 +12,7 @@ from ..config import JobEngineConfig
 from ..models import JobPriority, JobStatus
 from ..services.database import DatabaseService
 from ..services.job_processor import JobProcessor
+from ..utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,7 @@ async def health_check(
 
     return HealthResponse(
         status="healthy" if healthy else "degraded",
-        timestamp=datetime.utcnow(),
+        timestamp=utcnow(),
         version=request.app.state.version,
         database_status=database_status,
         worker_status=worker_status,

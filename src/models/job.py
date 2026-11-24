@@ -1,11 +1,12 @@
 """SQLAlchemy models for the job engine."""
 
 import uuid
-from datetime import datetime
 from enum import Enum as PyEnum
 
 from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text
 from sqlalchemy.ext.declarative import declarative_base
+
+from ..utils import utcnow
 
 
 Base = declarative_base()
@@ -77,7 +78,7 @@ class Job(Base):
     max_retries = Column(Integer, nullable=False, default=3)
     next_retry_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
     started_at = Column(DateTime, nullable=True)
     claimed_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)

@@ -6,11 +6,12 @@ import logging
 import random
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from ..config import JobEngineConfig
 from ..models import JobPriority
+from ..utils import utcnow
 from .database import DatabaseService
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ class JobProcessor:
             return
 
         delay = self._backoff_delay(retry_count)
-        next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
+        next_retry_at = utcnow() + timedelta(seconds=delay)
         if await self.db.schedule_retry(
             job_id, error, elapsed, retry_count, next_retry_at
         ):

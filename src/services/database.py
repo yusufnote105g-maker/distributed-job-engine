@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from ..config import JobEngineConfig
 from ..models import Base, Job, JobPriority, JobStatus
+from ..utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,7 @@ class DatabaseService:
         for _attempt in range(100):
             session = self.Session()
             try:
-                now = datetime.utcnow()
+                now = utcnow()
                 result = session.execute(
                     select(Job.id)
                     .where(
@@ -326,7 +327,7 @@ class DatabaseService:
             result=result,
             error=None,
             execution_time=execution_time,
-            completed_at=datetime.utcnow(),
+            completed_at=utcnow(),
         )
 
     async def mark_failed(
@@ -338,7 +339,7 @@ class DatabaseService:
             status=JobStatus.FAILED,
             error=error,
             execution_time=execution_time,
-            completed_at=datetime.utcnow(),
+            completed_at=utcnow(),
         )
 
     async def schedule_retry(
@@ -375,7 +376,7 @@ class DatabaseService:
             error=error,
             execution_time=execution_time,
             retry_count=retry_count,
-            completed_at=datetime.utcnow(),
+            completed_at=utcnow(),
         )
 
     async def cancel_job(self, job_id: str) -> bool:
@@ -388,7 +389,7 @@ class DatabaseService:
                 JobStatus.RETRYING,
             },
             status=JobStatus.CANCELLED,
-            completed_at=datetime.utcnow(),
+            completed_at=utcnow(),
             claimed_at=None,
             worker_id=None,
         )
@@ -420,7 +421,7 @@ class DatabaseService:
         return await asyncio.to_thread(self._promote_due_retries_sync, now)
 
     def _promote_due_retries_sync(self, now: Optional[datetime] = None) -> int:
-        now = now or datetime.utcnow()
+        now = now or utcnow()
         session = self.Session()
         try:
             result = session.execute(
