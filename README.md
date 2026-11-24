@@ -99,7 +99,9 @@ scripts/run_tests.sh            # or: python3 -m pytest
 The suite covers the HTTP contract, priority ordering, atomic claiming under
 parallelism, retry/backoff/dead-letter, timeouts, cancellation, idempotency
 races and crash recovery. Tests run against a temporary SQLite file and start
-real workers, so they exercise the same code paths as production.
+real workers, so they exercise the same code paths as production. CI runs the
+suite on Python 3.11, 3.12, 3.13 and 3.14, plus lint, a benchmark smoke run and a
+Docker build.
 
 ## Benchmark
 

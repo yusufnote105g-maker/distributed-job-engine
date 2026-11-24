@@ -27,7 +27,7 @@ supported server runtimes, with a verified concurrency model.
 - Documentation: `docs/api.md`, `docs/architecture.md`, `docs/benchmark.md`,
   `docs/database_schema.md`, `docs/known_limitations.md`,
   `docs/security_analysis.md`, plus `SECURITY.md`.
-- CI: lint, tests on Python 3.11/3.12/3.13, benchmark smoke and Docker build.
+- CI: lint, tests on Python 3.11/3.12/3.13/3.14, benchmark smoke and Docker build.
 
 ### Changed
 
