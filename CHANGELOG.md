@@ -33,6 +33,8 @@ supported server runtimes, with a verified concurrency model.
 
 - Dependencies pinned to pydantic 1.10 and SQLAlchemy 1.4 so no Rust
   `pydantic-core` build is required.
+- Timestamps now come from `src.utils.utcnow()` instead of the deprecated
+  `datetime.utcnow()`; the stored naive-UTC format is unchanged.
 - `DatabaseService` uses synchronous SQLAlchemy on a thread pool instead of
   `aiosqlite`.
 - SQLite tuned with WAL, `busy_timeout=30000`, `synchronous=NORMAL` and

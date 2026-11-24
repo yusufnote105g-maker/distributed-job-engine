@@ -71,9 +71,11 @@ a real deployment, whatever your dispatcher allows).
 
 ## Timestamps are naive UTC
 
-`datetime.utcnow()` is used throughout; values have no timezone information and
-`datetime.utcnow()` is deprecated in newer Pythons. Consistent internally, but
-it will need to become timezone-aware.
+All timestamps are UTC without a timezone suffix. They are produced by
+`src.utils.utcnow()`, which wraps `datetime.now(timezone.utc)` and drops the
+`tzinfo`, so the deprecated `datetime.utcnow()` is no longer used and the stored
+format is unchanged. The remaining gap is that values are still naive: any
+consumer must know they are UTC.
 
 ## No pagination cursor
 
