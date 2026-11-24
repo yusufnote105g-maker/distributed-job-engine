@@ -5,9 +5,11 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
+from .. import metrics
 from ..config import JobEngineConfig
 from ..models import JobPriority, JobStatus
 from ..services.database import DatabaseService
@@ -216,3 +218,38 @@ async def get_stats(db: DatabaseService = Depends(get_db)):
 @router.get("/metrics")
 async def get_metrics(processor: JobProcessor = Depends(get_processor)):
     return await processor.metrics()
+
+
+@router.get("/metrics/prometheus", include_in_schema=False)
+async def get_prometheus_metrics(
+    db: DatabaseService = Depends(get_db),
+    processor: JobProcessor = Depends(get_processor),
+) -> Response:
+    """Prometheus scrape endpoint.
+
+    Queue depth and worker gauges are computed on every scrape, so they always
+    reflect the current state instead of drifting from the counters.
+    """
+    stats = await db.stats()
+
+    for job_status in JobStatus:
+        metrics.JOBS_BY_STATUS.labels(status=job_status.value).set(
+            stats["status_counts"].get(job_status.value, 0)
+        )
+
+    metrics.WORKERS_ACTIVE.set(
+        sum(1 for worker in processor.workers if not worker.done())
+    )
+
+    oldest = stats.get("oldest_pending_job")
+    if oldest:
+        age = (utcnow() - datetime.fromisoformat(oldest)).total_seconds()
+        metrics.OLDEST_PENDING_AGE_SECONDS.set(max(age, 0.0))
+    else:
+        metrics.OLDEST_PENDING_AGE_SECONDS.set(0.0)
+
+    # Set the header directly: passing `media_type` makes Starlette append a
+    # second `charset=utf-8` to prometheus_client's content type.
+    return Response(
+        content=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST}
+    )

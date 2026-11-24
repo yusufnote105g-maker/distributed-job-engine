@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from src.config import JobEngineConfig
-from src.main import create_app
+from src.main import VERSION, create_app
 from src.services.database import DatabaseService
 from src.services.job_processor import JobProcessor
 
@@ -60,7 +60,7 @@ async def api_client(tmp_path):
     app.state.db_service = db_service
     app.state.job_processor = processor
     app.state.config = config
-    app.state.version = "1.0.0"
+    app.state.version = VERSION
 
     try:
         transport = httpx.ASGITransport(app=app)
@@ -88,7 +88,7 @@ async def api_client_factory(tmp_path):
         app.state.db_service = db_service
         app.state.job_processor = processor
         app.state.config = config
-        app.state.version = "1.0.0"
+        app.state.version = VERSION
 
         transport = httpx.ASGITransport(app=app)
         client = httpx.AsyncClient(transport=transport, base_url="http://testserver")

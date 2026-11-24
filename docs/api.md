@@ -93,6 +93,36 @@ Everything from `/stats` plus `average_execution_time`, `worker_count`,
 `active_workers`, `processor_running`, `worker_id`,
 `processed_by_this_processor`, `failed_by_this_processor`.
 
+## GET /metrics/prometheus
+
+Prometheus text format (`text/plain; version=1.0.0`), suitable for scraping:
+
+```yaml
+scrape_configs:
+  - job_name: job-engine
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    metrics_path: /api/v1/metrics/prometheus
+```
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `jobs_submitted_total{priority}` | counter | Submissions accepted (idempotent replays are not counted) |
+| `jobs_completed_total` | counter | Jobs that reached `completed` |
+| `jobs_failed_total` | counter | Jobs that reached `failed` |
+| `jobs_dead_letter_total` | counter | Jobs that exhausted their retries |
+| `jobs_cancelled_total` | counter | Jobs cancelled through the API |
+| `job_execution_seconds` | histogram | Payload execution time |
+| `jobs_by_status{status}` | gauge | Current row count per status |
+| `workers_active` | gauge | Worker coroutines alive in this process |
+| `oldest_pending_job_age_seconds` | gauge | Age of the oldest `pending` job, `0` when empty |
+
+Counters are cumulative for the lifetime of the process and reset when it
+restarts. The gauges are recomputed on every scrape from the database, so they
+stay correct across restarts.
+
+This endpoint is excluded from the OpenAPI schema because it is not a JSON API.
+
 ## Job object
 
 ```json

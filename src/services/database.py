@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from ..config import JobEngineConfig
+from .. import metrics
 from ..models import Base, Job, JobPriority, JobStatus
 from ..utils import utcnow
 
@@ -173,6 +174,7 @@ class DatabaseService:
                     continue
 
                 session.refresh(job)
+                metrics.JOBS_SUBMITTED.labels(priority=priority.value).inc()
                 logger.info(
                     "Job submitted: %s (priority=%s)", job.job_id, priority.value
                 )
@@ -320,7 +322,7 @@ class DatabaseService:
     async def complete_job(
         self, job_id: str, result: str, execution_time: float
     ) -> bool:
-        return await self._update_where_status(
+        updated = await self._update_where_status(
             job_id,
             {JobStatus.CLAIMED, JobStatus.RUNNING},
             status=JobStatus.COMPLETED,
@@ -329,11 +331,15 @@ class DatabaseService:
             execution_time=execution_time,
             completed_at=utcnow(),
         )
+        if updated:
+            metrics.JOBS_COMPLETED.inc()
+            metrics.JOB_EXECUTION_SECONDS.observe(execution_time)
+        return updated
 
     async def mark_failed(
         self, job_id: str, error: str, execution_time: float
     ) -> bool:
-        return await self._update_where_status(
+        updated = await self._update_where_status(
             job_id,
             {JobStatus.PENDING, JobStatus.CLAIMED, JobStatus.RUNNING},
             status=JobStatus.FAILED,
@@ -341,6 +347,9 @@ class DatabaseService:
             execution_time=execution_time,
             completed_at=utcnow(),
         )
+        if updated:
+            metrics.JOBS_FAILED.inc()
+        return updated
 
     async def schedule_retry(
         self,
@@ -369,7 +378,7 @@ class DatabaseService:
         execution_time: float,
         retry_count: int,
     ) -> bool:
-        return await self._update_where_status(
+        updated = await self._update_where_status(
             job_id,
             {JobStatus.PENDING, JobStatus.CLAIMED, JobStatus.RUNNING},
             status=JobStatus.DEAD_LETTER,
@@ -378,9 +387,12 @@ class DatabaseService:
             retry_count=retry_count,
             completed_at=utcnow(),
         )
+        if updated:
+            metrics.JOBS_DEAD_LETTER.inc()
+        return updated
 
     async def cancel_job(self, job_id: str) -> bool:
-        return await self._update_where_status(
+        updated = await self._update_where_status(
             job_id,
             {
                 JobStatus.PENDING,
@@ -393,6 +405,9 @@ class DatabaseService:
             claimed_at=None,
             worker_id=None,
         )
+        if updated:
+            metrics.JOBS_CANCELLED.inc()
+        return updated
 
     async def requeue_stale_jobs(self) -> int:
         return await asyncio.to_thread(self._requeue_stale_jobs_sync)

@@ -5,6 +5,7 @@ fastapi>=0.104,<0.105
 uvicorn>=0.24,<0.25
 pydantic>=1.10,<2.0
 SQLAlchemy>=1.4,<2.0
+prometheus-client>=0.20,<1.0
 
 # Test dependencies
 pytest>=8.0,<9.0

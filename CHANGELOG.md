@@ -7,6 +7,14 @@ the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- Prometheus scrape endpoint `GET /metrics/prometheus` with job counters
+  (submitted by priority, completed, failed, dead-letter, cancelled), an
+  execution-time histogram, and gauges for queue depth per status, live workers
+  and the age of the oldest pending job. The existing JSON `/metrics` endpoint is
+  unchanged.
+
 ## [1.2.0] — 2026-11-24
 
 The project is now an installable distribution, not only a source tree.

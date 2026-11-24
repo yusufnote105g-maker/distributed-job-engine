@@ -21,7 +21,8 @@ Python ≥ 3.11 · FastAPI · SQLAlchemy 1.4 · SQLite (WAL)
 * **Recover** jobs left in `claimed`/`running` after a crash, on next startup.
 * **Deduplicate** submissions with an `idempotency_key` enforced by a unique
   index.
-* **Observe** everything through `/health`, `/stats` and `/metrics`.
+* **Observe** everything through `/health`, `/stats`, `/metrics` and a
+  Prometheus scrape endpoint at `/metrics/prometheus`.
 
 ## Install
 
@@ -115,7 +116,8 @@ Full reference: [`docs/api.md`](docs/api.md).
 | `DELETE` | `/api/v1/jobs/{job_id}` | cancel a job (alias) |
 | `GET` | `/api/v1/health` | liveness + dependency status |
 | `GET` | `/api/v1/stats` | counters |
-| `GET` | `/api/v1/metrics` | counters + worker info |
+| `GET` | `/api/v1/metrics` | counters + worker info (JSON) |
+| `GET` | `/api/v1/metrics/prometheus` | Prometheus text format |
 
 ## Payloads
 
