@@ -25,8 +25,8 @@ supported server runtimes, with a verified concurrency model.
 - Optional shared-key authentication via `X-API-Key`, compared in constant time.
 - `benchmark/benchmark.py` with submission, processing and end-to-end metrics.
 - Documentation: `docs/api.md`, `docs/architecture.md`, `docs/benchmark.md`,
-  `docs/database_schema.md`, `docs/known_limitations.md`,
-  `docs/security_analysis.md`, plus `SECURITY.md`.
+  `docs/database_schema.md`, `docs/deployment.md`,
+  `docs/known_limitations.md`, `docs/security_analysis.md`, plus `SECURITY.md`.
 - CI: lint, tests on Python 3.11/3.12/3.13/3.14, benchmark smoke and Docker build.
 
 ### Changed
