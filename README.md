@@ -23,6 +23,32 @@ Python ≥ 3.11 · FastAPI · SQLAlchemy 1.4 · SQLite (WAL)
   index.
 * **Observe** everything through `/health`, `/stats` and `/metrics`.
 
+## Install
+
+Three ways, pick one.
+
+**Wheel from the release** — no clone, no build:
+
+```bash
+pip install https://github.com/yusufnote105g-maker/distributed-job-engine/releases/download/v1.2.0/distributed_job_engine-1.2.0-py3-none-any.whl
+job-engine version
+job-engine serve --host 0.0.0.0 --port 8000
+```
+
+Every `v*` tag also gets a source archive and a `.tar.gz` attached to the
+release.
+
+**Docker image** — published to GHCR on every `v*` tag:
+
+```bash
+docker pull ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.2.0
+docker run -p 8000:8000 -v job-data:/data \
+  -e DATABASE_URL=sqlite:////data/jobs.db \
+  ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.2.0
+```
+
+**From source** — see Quick start below.
+
 ## Quick start
 
 ```bash
