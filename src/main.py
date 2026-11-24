@@ -7,12 +7,13 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import __version__
 from .api.routes import router
 from .config import JobEngineConfig
 from .services.database import DatabaseService
 from .services.job_processor import JobProcessor
 
-VERSION = "1.0.0"
+VERSION = __version__
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ if __name__ == "__main__":
     settings = JobEngineConfig.from_env()
     configure_logging(settings)
     uvicorn.run(
-        "src.main:app",
+        app,
         host=settings.api_host,
         port=settings.api_port,
         reload=False,

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distributed-job-engine"
+version = "1.2.0"
+description = "Async job engine with a FastAPI REST API, a SQLite-backed priority queue and asyncio workers."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "yusufnote105g-maker" }]
+keywords = ["job-queue", "task-queue", "fastapi", "sqlite", "asyncio", "background-jobs"]
+classifiers = [
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "fastapi>=0.104,<0.105",
+    "uvicorn>=0.24,<0.25",
+    "pydantic>=1.10,<2.0",
+    "SQLAlchemy>=1.4,<2.0",
+]
+
+[project.optional-dependencies]
+# PostgreSQL support is implemented in code but cannot be verified on
+# Android/bionic; it is tested in CI against a real PostgreSQL service.
+postgres = ["psycopg[binary]>=3.1"]
+metrics = ["prometheus-client>=0.20"]
+otel = ["opentelemetry-sdk>=1.25"]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.23,<1.0",
+    "httpx>=0.27,<1.0",
+]
+
+[project.scripts]
+job-engine = "distributed_job_engine.cli:main"
+
+[project.urls]
+Repository = "https://github.com/yusufnote105g-maker/distributed-job-engine"
+Changelog = "https://github.com/yusufnote105g-maker/distributed-job-engine/blob/master/CHANGELOG.md"
+
+[tool.setuptools]
+# The repository keeps the source in `src/`, but the installed distribution is
+# named `distributed_job_engine` so that `import distributed_job_engine` and the
+# `job-engine` console script work. All imports inside `src/` are relative, so
+# the same files work both in-place and when installed.
+package-dir = { "distributed_job_engine" = "src" }
+packages = [
+    "distributed_job_engine",
+    "distributed_job_engine.api",
+    "distributed_job_engine.models",
+    "distributed_job_engine.services",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
