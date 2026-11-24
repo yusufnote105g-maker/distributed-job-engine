@@ -45,6 +45,15 @@ curl -s localhost:8000/api/v1/metrics
 
 Interactive docs: <http://localhost:8000/docs>
 
+Or submit and wait for the result with the bundled client:
+
+```bash
+python3 examples/client.py '{"task":"sleep","seconds":1}' --priority high
+```
+
+It prints the final job as JSON and exits `0` on `completed`, `2` on
+`failed`/`cancelled`/`dead_letter`, `3` on timeout.
+
 ## Configuration
 
 All settings are environment variables (`src/config.py`).
