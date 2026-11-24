@@ -60,6 +60,10 @@ class JobEngineConfig:
     # Testing / operations
     enable_workers: bool = True
     recover_stale_jobs: bool = True
+    # Requeue claimed/running jobs on startup. 0 requeues every such job
+    # (safe for a single process); set it above WORKER_TIMEOUT when several
+    # processes share one database so a restart cannot steal live work.
+    stale_job_age: float = 0.0
 
     @classmethod
     def from_env(cls) -> "JobEngineConfig":
@@ -83,4 +87,5 @@ class JobEngineConfig:
             api_key_header=_env_str("API_KEY_HEADER", cls.api_key_header),
             enable_workers=_env_bool("ENABLE_WORKERS", cls.enable_workers),
             recover_stale_jobs=_env_bool("RECOVER_STALE_JOBS", cls.recover_stale_jobs),
+            stale_job_age=_env_float("STALE_JOB_AGE", cls.stale_job_age),
         )

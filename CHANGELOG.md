@@ -9,6 +9,12 @@ the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
+- `job-engine worker` runs workers in a dedicated process and
+  `job-engine serve --no-workers` serves HTTP only, so CPU-heavy payloads no
+  longer block the API. `scripts/smoke_split.sh` verifies the split deployment.
+- `STALE_JOB_AGE`: startup recovery can be limited to jobs older than a
+  threshold, so restarting one process cannot requeue work that another live
+  process is executing. `0` keeps the previous single-process behaviour.
 - Prometheus scrape endpoint `GET /metrics/prometheus` with job counters
   (submitted by priority, completed, failed, dead-letter, cancelled), an
   execution-time histogram, and gauges for queue depth per status, live workers

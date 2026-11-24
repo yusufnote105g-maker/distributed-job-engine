@@ -105,6 +105,22 @@ async def test_crash_recovery_requeues_running_jobs(db):
 
 
 @pytest.mark.asyncio
+async def test_requeue_respects_age_threshold(db):
+    """With several processes on one database, a restart must not steal live work."""
+    job = await db.submit_job(payload="in-flight")
+    await db.claim_job("worker-1")
+    await db.mark_running(job["job_id"], "worker-1")
+
+    # Just started: older than 60s is false, so nothing is requeued.
+    assert await db.requeue_stale_jobs(older_than_seconds=60) == 0
+    assert (await db.get_job(job["job_id"]))["status"] == "running"
+
+    # Without a threshold the single-process behaviour is preserved.
+    assert await db.requeue_stale_jobs() == 1
+    assert (await db.get_job(job["job_id"]))["status"] == "pending"
+
+
+@pytest.mark.asyncio
 async def test_due_retry_is_promoted(db):
     job = await db.submit_job(payload="retry")
     await db.schedule_retry(

@@ -135,6 +135,11 @@ jobs:
           echo "installed package did not become healthy"
           exit 1
 
+      - name: Split deployment smoke (API without workers + worker process)
+        run: |
+          export PATH="/tmp/wheel-venv/bin:$PATH"
+          bash scripts/smoke_split.sh
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist

@@ -26,6 +26,7 @@ All settings come from environment variables (`src/config.py`).
 | `API_KEY_HEADER` | `X-API-Key` | Header carrying the key |
 | `ENABLE_WORKERS` | `true` | Set `false` for an API-only node |
 | `RECOVER_STALE_JOBS` | `true` | Requeue `claimed`/`running` rows on startup |
+| `STALE_JOB_AGE` | `0` | Only requeue jobs older than this many seconds; `0` means all. Set above `WORKER_TIMEOUT` when several processes share the database |
 
 ## Docker
 
@@ -160,6 +161,31 @@ requires a manual migration — there is no Alembic yet.
   same host.
 * **More workers** help only for I/O-bound payloads. CPU-bound work blocks the
   event loop for every worker — move it out of process.
+
+### Running the API and the workers separately
+
+The API and the execution layer are separate processes that share one database:
+
+```bash
+# terminal 1 — HTTP only, no workers
+job-engine serve --no-workers --host 127.0.0.1 --port 8000
+
+# terminal 2 — workers only, no HTTP
+job-engine worker --workers 4
+```
+
+Both read the same environment (`DATABASE_URL`, `WORKER_TIMEOUT`, `POLL_INTERVAL`,
+`MAX_RETRIES`, ...). This is the deployment shape to use when payloads are
+CPU-heavy, because a busy worker can no longer delay HTTP requests.
+
+**Required when running more than one process:** set `STALE_JOB_AGE` above
+`WORKER_TIMEOUT` (for example `STALE_JOB_AGE=900` with the default 300 s
+timeout). Otherwise a restarted API or worker requeues every `claimed`/`running`
+row — including jobs that another live process is currently executing. With the
+threshold set, only genuinely abandoned jobs are recovered.
+
+`scripts/smoke_split.sh` starts both processes, submits a job and waits for it to
+complete; CI runs it against the installed wheel.
 * **Beyond one host**, move the queue to PostgreSQL. This is a code change, not
   a configuration flag (see `docs/known_limitations.md`).
 

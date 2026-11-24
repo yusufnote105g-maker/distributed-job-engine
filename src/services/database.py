@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy import case, func, or_, select, update
@@ -409,16 +409,28 @@ class DatabaseService:
             metrics.JOBS_CANCELLED.inc()
         return updated
 
-    async def requeue_stale_jobs(self) -> int:
-        return await asyncio.to_thread(self._requeue_stale_jobs_sync)
+    async def requeue_stale_jobs(self, older_than_seconds: float = 0.0) -> int:
+        return await asyncio.to_thread(
+            self._requeue_stale_jobs_sync, older_than_seconds
+        )
 
-    def _requeue_stale_jobs_sync(self) -> int:
+    def _requeue_stale_jobs_sync(self, older_than_seconds: float = 0.0) -> int:
         session = self.Session()
         try:
+            statement = update(Job).where(
+                Job.status.in_([JobStatus.CLAIMED, JobStatus.RUNNING])
+            )
+            if older_than_seconds > 0:
+                cutoff = utcnow() - timedelta(seconds=older_than_seconds)
+                statement = statement.where(
+                    func.coalesce(Job.started_at, Job.claimed_at, Job.created_at)
+                    <= cutoff
+                )
+            # `coalesce` cannot be evaluated in Python, so the ORM must not try
+            # to synchronise loaded objects for this bulk update.
+            statement = statement.execution_options(synchronize_session=False)
             result = session.execute(
-                update(Job)
-                .where(Job.status.in_([JobStatus.CLAIMED, JobStatus.RUNNING]))
-                .values(
+                statement.values(
                     status=JobStatus.PENDING,
                     claimed_at=None,
                     started_at=None,

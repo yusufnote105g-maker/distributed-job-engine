@@ -38,7 +38,7 @@ class JobProcessor:
             return
         await self.db.initialize()
         if self.config.recover_stale_jobs:
-            await self.db.requeue_stale_jobs()
+            await self.db.requeue_stale_jobs(self.config.stale_job_age)
 
         self.running = True
         for index in range(self.config.worker_count):

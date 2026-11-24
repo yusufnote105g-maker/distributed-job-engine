@@ -81,6 +81,20 @@ python3 examples/client.py '{"task":"sleep","seconds":1}' --priority high
 It prints the final job as JSON and exits `0` on `completed`, `2` on
 `failed`/`cancelled`/`dead_letter`, `3` on timeout.
 
+## Run API and workers separately
+
+For CPU-heavy payloads, keep the HTTP API responsive by moving execution to its
+own process:
+
+```bash
+job-engine serve --no-workers --host 127.0.0.1 --port 8000   # HTTP only
+job-engine worker --workers 4                                # execution only
+```
+
+Both use the same `DATABASE_URL`. When more than one process shares the
+database, set `STALE_JOB_AGE` above `WORKER_TIMEOUT` so a restart cannot requeue
+jobs that a live process is still running.
+
 ## Configuration
 
 All settings are environment variables (`src/config.py`).
