@@ -5,10 +5,25 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] — 2026-11-24
+
+The engine now runs on PostgreSQL as well as SQLite, and the HTTP API can be
+deployed separately from the workers.
 
 ### Added
 
+- **PostgreSQL support.** `DATABASE_URL=postgresql+psycopg2://...` selects a
+  server-side database. Claims use `SELECT ... FOR UPDATE SKIP LOCKED`, so
+  concurrent workers take different rows and never block each other; the
+  single-writer limit of SQLite no longer applies. Connection pooling is
+  configured with `DB_POOL_SIZE` / `DB_MAX_OVERFLOW`.
+- **Alembic migrations** in `src/migrations/`, shipped inside the wheel, with a
+  new `job-engine migrate` command (`--revision`, `--database-url`). PostgreSQL
+  schemas are applied on startup when `AUTO_MIGRATE=true` (default). SQLite
+  keeps the zero-config `create_all`; pointing `migrate` at an existing SQLite
+  file stamps the baseline revision instead of replaying it.
+- New CI job that runs the whole suite and the split-deployment smoke against a
+  real PostgreSQL 16 service.
 - `job-engine worker` runs workers in a dedicated process and
   `job-engine serve --no-workers` serves HTTP only, so CPU-heavy payloads no
   longer block the API. `scripts/smoke_split.sh` verifies the split deployment.
@@ -20,6 +35,23 @@ the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   execution-time histogram, and gauges for queue depth per status, live workers
   and the age of the oldest pending job. The existing JSON `/metrics` endpoint is
   unchanged.
+
+### Changed
+
+- `postgres` extra now installs `psycopg2-binary` + `alembic`. The previous
+  `psycopg[binary]` entry could not work: SQLAlchemy 1.4 has no psycopg 3
+  dialect.
+- `postgres://` URLs are normalised to `postgresql://`, and
+  `postgresql+psycopg://` to `postgresql+psycopg2://`.
+- The Docker image accepts `--build-arg INSTALL_POSTGRES=true` to include the
+  PostgreSQL driver and Alembic; the default image is unchanged.
+
+### Fixed
+
+- Starlette appended a second `charset=utf-8` to the Prometheus content type;
+  the header is now set directly.
+- `requeue_stale_jobs` used `coalesce` in a bulk update, which SQLAlchemy 1.4
+  cannot evaluate in Python. It now uses `synchronize_session=False`.
 
 ## [1.2.0] — 2026-11-24
 

@@ -12,7 +12,7 @@ idempotent, or must use `idempotency_key` at the submission boundary.
 
 There is no exactly-once delivery.
 
-## Single-node database
+## SQLite is single-writer by default
 
 SQLite allows many readers but **one writer at a time**. WAL plus a 30 s
 `busy_timeout` absorbs short bursts, but write throughput is bounded by fsync
@@ -20,15 +20,21 @@ and lock handoff. In the bundled benchmark, throughput is dominated by the
 number of DB writes per job (claim, running, complete ≈ 3 writes) and by the
 synchronous commit on every submission.
 
+This is a property of the default backend, not of the engine: on PostgreSQL the
+same code uses row-level locking (`FOR UPDATE SKIP LOCKED`) and accepts writes
+from many processes. SQLite remains the zero-configuration option.
+
 Running multiple containers against one SQLite file works only when the file
 lives on a filesystem with working POSIX locking (local disk, not most network
 filesystems).
 
-## In-process workers only
+## Workers are cooperative coroutines
 
-Workers live in the API process. A CPU-bound payload blocks the event loop for
-all workers and for request handling. Long CPU work must be offloaded to a
-thread/process executor or to a separate worker deployment.
+By default the workers run inside the API process (`job-engine serve`). A
+CPU-bound payload blocks the event loop for all workers and for request
+handling. `job-engine serve --no-workers` plus `job-engine worker` moves
+execution to a separate process, but the worker is still a coroutine: a payload
+that blocks the loop cannot be interrupted by the timeout.
 
 ## Polling, not notification
 
@@ -82,10 +88,19 @@ consumer must know they are UTC.
 `GET /jobs` uses `LIMIT/OFFSET`. Deep offsets get slower and pages can shift
 when rows are inserted concurrently.
 
-## No metrics export
+## Observability stops at metrics
 
-`/metrics` returns JSON. There is no Prometheus endpoint, no tracing, and no
-log shipping configuration.
+`/metrics` returns JSON and `/metrics/prometheus` exposes the same state in
+Prometheus text format. There is no distributed tracing, no structured log
+shipping configuration and no request-id propagation, so correlating one
+request across API and worker logs is manual.
+
+## PostgreSQL needs its own driver
+
+PostgreSQL support is tested in CI against a real server, but the driver
+(`psycopg2`) and Alembic are an optional extra: `pip install
+'distributed-job-engine[postgres]'`. The default install stays pure-Python so it
+works on hosts (such as Android/bionic) where binary wheels are unavailable.
 
 ## Payload size is unbounded in practice
 

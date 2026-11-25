@@ -55,6 +55,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("version", help="print the installed version")
 
+    migrate = sub.add_parser(
+        "migrate", help="apply database migrations (PostgreSQL and SQLite)"
+    )
+    migrate.add_argument(
+        "--revision",
+        default="head",
+        help="target revision (default: head)",
+    )
+    migrate.add_argument(
+        "--database-url",
+        help="override DATABASE_URL",
+    )
+
     return parser
 
 
@@ -111,6 +124,46 @@ def _run_worker(config) -> int:
     return 0
 
 
+def _migrate(args) -> int:
+    from .config import JobEngineConfig
+    from .services.database import normalize_database_url
+
+    try:
+        from .migrations import current_revision, make_config, upgrade
+    except ImportError:
+        print(
+            "Alembic is not installed. Install the postgres extra:\n"
+            "  pip install 'distributed-job-engine[postgres]'",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = JobEngineConfig.from_env()
+    url = normalize_database_url(args.database_url or config.database_url)
+
+    if url.startswith("sqlite"):
+        # SQLite files are created by `create_all` at startup, so an existing
+        # database only needs the baseline revision recorded; replaying the
+        # initial migration against it would fail with "table already exists".
+        from sqlalchemy import create_engine, inspect
+
+        engine = create_engine(url)
+        try:
+            has_jobs = inspect(engine).has_table("jobs")
+        finally:
+            engine.dispose()
+        if has_jobs and current_revision(url) is None:
+            from alembic import command
+
+            command.stamp(make_config(url), "head")
+            print(f"{url}: stamped at head")
+            return 0
+
+    upgrade(url, args.revision)
+    print(f"{url}: revision {current_revision(url)}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -137,6 +190,9 @@ def main(argv=None) -> int:
                 config, worker_count=args.workers, enable_workers=True
             )
         return _run_worker(config)
+
+    if args.command == "migrate":
+        return _migrate(args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

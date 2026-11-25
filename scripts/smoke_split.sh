@@ -12,7 +12,11 @@ PORT="${PORT:-8123}"
 BASE="http://127.0.0.1:${PORT}/api/v1"
 WORKDIR="$(mktemp -d)"
 
-export DATABASE_URL="sqlite:///${WORKDIR}/jobs.db"
+# Respect an externally provided DATABASE_URL (for example PostgreSQL in CI);
+# fall back to a throw-away SQLite file.
+if [ -z "${DATABASE_URL:-}" ]; then
+  export DATABASE_URL="sqlite:///${WORKDIR}/jobs.db"
+fi
 export LOG_LEVEL="${LOG_LEVEL:-WARNING}"
 
 cleanup() {

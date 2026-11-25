@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "distributed-job-engine"
-version = "1.2.0"
-description = "Async job engine with a FastAPI REST API, a SQLite-backed priority queue and asyncio workers."
+version = "1.3.0"
+description = "Async job engine with a FastAPI REST API, a SQLite/PostgreSQL priority queue and asyncio workers."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "yusufnote105g-maker" }]
-keywords = ["job-queue", "task-queue", "fastapi", "sqlite", "asyncio", "background-jobs"]
+keywords = ["job-queue", "task-queue", "fastapi", "sqlite", "postgresql", "asyncio", "background-jobs"]
 classifiers = [
     "Environment :: Web Environment",
     "Framework :: FastAPI",
@@ -31,9 +31,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# PostgreSQL support is implemented in code but cannot be verified on
-# Android/bionic; it is tested in CI against a real PostgreSQL service.
-postgres = ["psycopg[binary]>=3.1"]
+# SQLAlchemy 1.4 has no psycopg 3 dialect, so psycopg2 is the supported driver.
+# Alembic owns the PostgreSQL schema; SQLite keeps the zero-config `create_all`.
+postgres = [
+    "psycopg2-binary>=2.9,<3.0",
+    "alembic>=1.13,<2.0",
+]
 otel = ["opentelemetry-sdk>=1.25"]
 dev = [
     "pytest>=8.0,<9.0",
@@ -57,9 +60,16 @@ package-dir = { "distributed_job_engine" = "src" }
 packages = [
     "distributed_job_engine",
     "distributed_job_engine.api",
+    "distributed_job_engine.migrations",
+    "distributed_job_engine.migrations.versions",
     "distributed_job_engine.models",
     "distributed_job_engine.services",
 ]
+
+[tool.setuptools.package-data]
+# The migration scripts must ship inside the wheel so that
+# `job-engine migrate` works on an installed package.
+"distributed_job_engine.migrations" = ["script.py.mako", "versions/*.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

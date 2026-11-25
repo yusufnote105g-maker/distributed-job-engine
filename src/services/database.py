@@ -1,4 +1,9 @@
-"""Data-access layer with asyncio for SQLite."""
+"""Data-access layer with asyncio.
+
+The same code path runs on SQLite (zero-configuration default) and PostgreSQL
+(the deployment target for more than one host). Dialect-specific details are
+isolated in `initialize()` and `_claim_job_sync()`.
+"""
 
 import asyncio
 import logging
@@ -8,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy import case, func, or_, select, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -27,11 +33,26 @@ PRIORITY_RANK = case(
 )
 
 
+def normalize_database_url(url: str) -> str:
+    """Accept the URL spellings people actually paste.
+
+    * ``postgres://`` (Heroku, some PaaS) is not a SQLAlchemy dialect name.
+    * ``postgresql+psycopg://`` is the psycopg 3 driver, which SQLAlchemy 1.4
+      does not ship; this project uses psycopg2 on SQLAlchemy 1.4.
+    """
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql+psycopg://"):
+        return "postgresql+psycopg2://" + url[len("postgresql+psycopg://") :]
+    return url
+
+
 class DatabaseService:
     def __init__(self, config: JobEngineConfig):
         self.config = config
         self.engine = None
         self.Session = None
+        self.is_sqlite = True
 
     # ------------------------------------------------------------------ setup
     async def initialize(self) -> None:
@@ -40,29 +61,34 @@ class DatabaseService:
 
         from sqlalchemy import create_engine, event
 
-        url = self.config.database_url
+        url = normalize_database_url(self.config.database_url)
+        self.is_sqlite = url.startswith("sqlite")
         kwargs: Dict[str, Any] = {"echo": False}
-        is_sqlite = url.startswith("sqlite")
-        if is_sqlite and ":memory:" not in url:
+        if self.is_sqlite and ":memory:" not in url:
             # Make sure the parent directory exists; SQLite refuses to create a
             # database file inside a missing directory.
-            from sqlalchemy.engine import make_url
-
             db_path = make_url(url).database
             if db_path and db_path != ":memory:":
                 os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         if ":memory:" in url:
             kwargs["poolclass"] = StaticPool
             kwargs["connect_args"] = {"check_same_thread": False}
-        elif is_sqlite:
+        elif self.is_sqlite:
             # Allow the connection to be shared between worker threads and
             # wait for write locks instead of failing fast under contention.
             kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        else:
+            # Server-side database: keep the pool small and drop connections
+            # that died (failover, idle timeouts) instead of handing them out.
+            kwargs["pool_pre_ping"] = True
+            kwargs["pool_recycle"] = 1800
+            kwargs["pool_size"] = self.config.db_pool_size
+            kwargs["max_overflow"] = self.config.db_max_overflow
 
         self.engine = create_engine(url, **kwargs)
         self.Session = sessionmaker(self.engine, expire_on_commit=False)
 
-        if is_sqlite:
+        if self.is_sqlite:
             @event.listens_for(self.engine, "connect")
             def _sqlite_pragmas(dbapi_connection, _record):  # noqa: ANN001
                 cursor = dbapi_connection.cursor()
@@ -73,12 +99,56 @@ class DatabaseService:
                 finally:
                     cursor.close()
 
-        Base.metadata.create_all(self.engine)
-
-        if is_sqlite:
+            Base.metadata.create_all(self.engine)
             self._ensure_idempotency_index()
+        else:
+            self._prepare_server_schema(url)
 
-        logger.info("Database initialized: %s", self.config.database_url)
+        logger.info("Database initialized: %s", url)
+
+    def _prepare_server_schema(self, url: str) -> None:
+        """Create or migrate the schema of a server-side database.
+
+        SQLite gets `create_all` because a local file has no other consumer.
+        PostgreSQL is shared and long-lived, so its schema is owned by Alembic;
+        running `create_all` there would drift from the migration history.
+        """
+        from sqlalchemy import inspect
+
+        inspector = inspect(self.engine)
+        has_jobs = inspector.has_table("jobs")
+        has_version = inspector.has_table("alembic_version")
+        if not self.config.auto_migrate:
+            if not has_jobs:
+                raise RuntimeError(
+                    "PostgreSQL schema is missing. Run `job-engine migrate` "
+                    "before starting, or set AUTO_MIGRATE=true."
+                )
+            return
+
+        try:
+            from alembic import command
+
+            from ..migrations import make_config, upgrade
+        except ImportError as exc:  # pragma: no cover - depends on extras
+            raise RuntimeError(
+                "AUTO_MIGRATE requires Alembic. Install the postgres extra: "
+                "pip install 'distributed-job-engine[postgres]'"
+            ) from exc
+
+        if has_jobs and not has_version:
+            # A schema created by an older release (or by `create_all`) has no
+            # migration history. Record the baseline instead of replaying the
+            # initial migration against existing tables.
+            command.stamp(make_config(url), "head")
+            logger.warning(
+                "Existing schema without alembic_version: stamped at head"
+            )
+            return
+
+        upgrade(url)
+        logger.info("Applied Alembic migrations (upgrade head)")
+
 
     def _ensure_idempotency_index(self) -> None:
         """Add the unique idempotency index to databases created before it existed.
@@ -239,6 +309,9 @@ class DatabaseService:
         return await asyncio.to_thread(self._claim_job_sync, worker_id)
 
     def _claim_job_sync(self, worker_id: str) -> Optional[Dict[str, Any]]:
+        if not self.is_sqlite:
+            return self._claim_job_postgres(worker_id)
+
         # SQLite has no row-level locking, so a claim is a two-step optimistic
         # operation: pick a candidate, then update it only if it is still
         # pending. If another worker won the race we retry with a fresh
@@ -279,6 +352,46 @@ class DatabaseService:
                     job = session.get(Job, job_pk)
                     return job.to_dict() if job else None
                 # Lost the race; loop and try the next candidate.
+            except OperationalError:
+                session.rollback()
+                time.sleep(0.01)
+            finally:
+                session.close()
+
+        return None
+
+    def _claim_job_postgres(self, worker_id: str) -> Optional[Dict[str, Any]]:
+        """Claim one job atomically with `SELECT ... FOR UPDATE SKIP LOCKED`.
+
+        Two workers cannot pick the same row: the loser skips the locked row
+        and takes the next candidate instead of retrying. This is the reason
+        PostgreSQL scales writes where SQLite cannot.
+        """
+        for _attempt in range(5):
+            session = self.Session()
+            try:
+                now = utcnow()
+                job = session.execute(
+                    select(Job)
+                    .where(
+                        Job.status == JobStatus.PENDING,
+                        or_(Job.next_retry_at.is_(None), Job.next_retry_at <= now),
+                    )
+                    .order_by(PRIORITY_RANK, Job.created_at, Job.id)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                ).scalar_one_or_none()
+                if job is None:
+                    session.rollback()
+                    return None
+
+                job.status = JobStatus.CLAIMED
+                job.worker_id = worker_id
+                job.claimed_at = now
+                job.started_at = now
+                job.next_retry_at = None
+                session.commit()
+                return job.to_dict()
             except OperationalError:
                 session.rollback()
                 time.sleep(0.01)

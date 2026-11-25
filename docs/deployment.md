@@ -1,7 +1,9 @@
 # Deployment guide
 
-The service is a single process that serves the HTTP API and runs the workers in
-the same event loop. One SQLite file is the only state.
+The default deployment is one process that serves the HTTP API and runs the
+workers in the same event loop, with one SQLite file as the only state. Larger
+deployments split the API and the workers into separate processes and move the
+queue to PostgreSQL; both shapes are described below.
 
 ## Configuration
 
@@ -9,7 +11,10 @@ All settings come from environment variables (`src/config.py`).
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite:///./jobs.db` | Parent directory is created automatically |
+| `DATABASE_URL` | `sqlite:///./jobs.db` | `sqlite://` or `postgresql+psycopg2://`. Parent directory is created automatically |
+| `AUTO_MIGRATE` | `true` | PostgreSQL: apply Alembic migrations on startup. SQLite always uses `create_all` |
+| `DB_POOL_SIZE` | `5` | PostgreSQL connection pool size |
+| `DB_MAX_OVERFLOW` | `10` | PostgreSQL extra connections above the pool |
 | `WORKER_COUNT` | `4` | Keep ≤ CPU cores for I/O-bound work |
 | `WORKER_TIMEOUT` | `300` | Per-job timeout, seconds |
 | `POLL_INTERVAL` | `0.5` | Idle poll interval, seconds |
@@ -148,19 +153,48 @@ Restore by stopping the service, replacing the file (and removing stale
 4. Restart the service; `SIGTERM` drains workers first.
 5. Check `/health` and `/stats`.
 
-Schema changes are additive only: `Base.metadata.create_all` creates missing
-tables but does not alter existing ones. A release that changes a column
-requires a manual migration — there is no Alembic yet.
+Schema changes are owned by Alembic on PostgreSQL (`job-engine migrate`, applied
+automatically at startup by default). SQLite databases are still created with
+`Base.metadata.create_all`, which creates missing tables but does not alter
+existing ones; for a SQLite schema change, add a migration and run
+`job-engine migrate`.
 
 ## Scaling
 
-* **One writer only.** SQLite serialises writes. Do not run two containers
-  against the same file over a network filesystem.
+* **One writer only (SQLite).** SQLite serialises writes. Do not run two
+  containers against the same file over a network filesystem.
 * **API-only replicas.** Set `ENABLE_WORKERS=false` to serve reads from extra
-  nodes; they must share the same database file, which in practice means the
-  same host.
+  nodes; with SQLite they must share the same database file, which in practice
+  means the same host.
 * **More workers** help only for I/O-bound payloads. CPU-bound work blocks the
-  event loop for every worker — move it out of process.
+  event loop for every worker — run `job-engine worker` in a separate process.
+
+### PostgreSQL: more than one host
+
+PostgreSQL removes the single-writer limit and lets any number of API and worker
+processes share one queue. Claims use `SELECT ... FOR UPDATE SKIP LOCKED`, so
+concurrent workers take different rows instead of retrying against each other.
+
+```bash
+pip install 'distributed-job-engine[postgres]'   # psycopg2 + alembic
+
+export DATABASE_URL='postgresql+psycopg2://jobengine:secret@db:5432/jobs'
+job-engine migrate            # explicit; serve/worker also do this by default
+job-engine serve --no-workers --host 0.0.0.0 --port 8000
+job-engine worker --workers 8
+```
+
+Notes:
+
+* `postgres://` URLs are normalised to `postgresql://`, and
+  `postgresql+psycopg://` is mapped to `postgresql+psycopg2://` because
+  SQLAlchemy 1.4 has no psycopg 3 dialect.
+* Set `AUTO_MIGRATE=false` if you want migrations to be a separate, explicit
+  deployment step (recommended when several replicas start at once).
+* Keep `STALE_JOB_AGE` above `WORKER_TIMEOUT`: a restarting process must not
+  requeue jobs that another live process is still running.
+* The Docker image supports PostgreSQL when built with
+  `--build-arg INSTALL_POSTGRES=true`.
 
 ### Running the API and the workers separately
 
@@ -185,9 +219,7 @@ row — including jobs that another live process is currently executing. With th
 threshold set, only genuinely abandoned jobs are recovered.
 
 `scripts/smoke_split.sh` starts both processes, submits a job and waits for it to
-complete; CI runs it against the installed wheel.
-* **Beyond one host**, move the queue to PostgreSQL. This is a code change, not
-  a configuration flag (see `docs/known_limitations.md`).
+complete; CI runs it against the installed wheel on both SQLite and PostgreSQL.
 
 ## Troubleshooting
 
@@ -195,6 +227,8 @@ complete; CI runs it against the installed wheel.
 | --- | --- | --- |
 | `unable to open database file` | Directory missing or not writable by the process uid | Create it and fix ownership; the app creates missing directories but cannot fix permissions |
 | `database is locked` | Another writer, or a long transaction | Keep one writer; check for stray processes |
+| `PostgreSQL schema is missing` | `AUTO_MIGRATE=false` and no migrations applied | Run `job-engine migrate`, or set `AUTO_MIGRATE=true` |
+| `No module named 'psycopg2'` | PostgreSQL URL without the driver | `pip install 'distributed-job-engine[postgres]'` |
 | `/health` says `degraded` | Database unreachable or workers stopped | Check logs and `ENABLE_WORKERS` |
 | `409` on cancel | Job already terminal | Expected; read the job first |
 | `401` on writes | `SECRET_KEY` set but header missing/wrong | Send the configured `API_KEY_HEADER` |

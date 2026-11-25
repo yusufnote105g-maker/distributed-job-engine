@@ -6,9 +6,9 @@
 
 An asynchronous job engine with a REST API, priority queue, concurrent
 workers, retries with exponential backoff, per-job timeouts, and durable
-storage in SQLite.
+storage in SQLite or PostgreSQL.
 
-Python ≥ 3.11 · FastAPI · SQLAlchemy 1.4 · SQLite (WAL)
+Python ≥ 3.11 · FastAPI · SQLAlchemy 1.4 · SQLite (WAL) / PostgreSQL
 
 ## What it does
 
@@ -95,13 +95,34 @@ Both use the same `DATABASE_URL`. When more than one process shares the
 database, set `STALE_JOB_AGE` above `WORKER_TIMEOUT` so a restart cannot requeue
 jobs that a live process is still running.
 
+## PostgreSQL
+
+SQLite is the default and needs no setup. For more than one host, or for
+concurrent writers, use PostgreSQL:
+
+```bash
+pip install 'distributed-job-engine[postgres]'   # psycopg2 + alembic
+
+export DATABASE_URL='postgresql+psycopg2://jobengine:secret@localhost:5432/jobs'
+job-engine migrate                # create/migrate the schema
+job-engine serve --no-workers     # any number of API replicas
+job-engine worker --workers 8     # any number of worker replicas
+```
+
+Claims use `SELECT ... FOR UPDATE SKIP LOCKED`, so concurrent workers take
+different rows instead of colliding. `serve` and `worker` apply pending
+migrations on startup by default; set `AUTO_MIGRATE=false` to make
+`job-engine migrate` an explicit deployment step.
+
 ## Configuration
 
 All settings are environment variables (`src/config.py`).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite:///./jobs.db` | SQLAlchemy URL (SQLite, WAL mode) |
+| `DATABASE_URL` | `sqlite:///./jobs.db` | SQLAlchemy URL: SQLite (WAL) or `postgresql+psycopg2://` |
+| `AUTO_MIGRATE` | `true` | PostgreSQL: apply Alembic migrations on startup |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `5` / `10` | PostgreSQL connection pool |
 | `WORKER_COUNT` | `4` | concurrent worker tasks |
 | `WORKER_TIMEOUT` | `300` | default per-job timeout, seconds |
 | `POLL_INTERVAL` | `0.5` | idle poll interval, seconds |
@@ -115,6 +136,7 @@ All settings are environment variables (`src/config.py`).
 | `API_KEY_HEADER` | `X-API-Key` | header name for the key |
 | `ENABLE_WORKERS` | `true` | run the worker pool in this process |
 | `RECOVER_STALE_JOBS` | `true` | requeue stuck jobs at startup |
+| `STALE_JOB_AGE` | `0` | only recover jobs older than this; set above `WORKER_TIMEOUT` with several processes |
 | `LOG_LEVEL` | `INFO` | logging level |
 
 ## API
@@ -151,8 +173,9 @@ The suite covers the HTTP contract, priority ordering, atomic claiming under
 parallelism, retry/backoff/dead-letter, timeouts, cancellation, idempotency
 races and crash recovery. Tests run against a temporary SQLite file and start
 real workers, so they exercise the same code paths as production. CI runs the
-suite on Python 3.11, 3.12, 3.13 and 3.14, plus lint, a benchmark smoke run and a
-Docker build.
+suite on Python 3.11, 3.12, 3.13 and 3.14, repeats it against a real PostgreSQL
+16 service (`TEST_DATABASE_URL`), plus lint, a benchmark smoke run and a Docker
+build.
 
 ## Benchmark
 

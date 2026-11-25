@@ -30,6 +30,11 @@ def _env_bool(name: str, default: bool) -> bool:
 class JobEngineConfig:
     # Database
     database_url: str = "sqlite:///./jobs.db"
+    # PostgreSQL only: apply Alembic migrations on startup. SQLite schemas are
+    # still created with `create_all`, so nothing changes for existing files.
+    auto_migrate: bool = True
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
 
     # Workers
     worker_count: int = 4
@@ -69,6 +74,9 @@ class JobEngineConfig:
     def from_env(cls) -> "JobEngineConfig":
         return cls(
             database_url=_env_str("DATABASE_URL", cls.database_url),
+            auto_migrate=_env_bool("AUTO_MIGRATE", cls.auto_migrate),
+            db_pool_size=_env_int("DB_POOL_SIZE", cls.db_pool_size),
+            db_max_overflow=_env_int("DB_MAX_OVERFLOW", cls.db_max_overflow),
             worker_count=_env_int("WORKER_COUNT", cls.worker_count),
             worker_timeout=_env_int("WORKER_TIMEOUT", cls.worker_timeout),
             poll_interval=_env_float("POLL_INTERVAL", cls.poll_interval),

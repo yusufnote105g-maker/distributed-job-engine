@@ -11,6 +11,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# The default image stays pure-Python (SQLite only). Build with
+#   --build-arg INSTALL_POSTGRES=true
+# to add the psycopg2 driver and Alembic for a PostgreSQL deployment.
+ARG INSTALL_POSTGRES=false
+RUN if [ "$INSTALL_POSTGRES" = "true" ]; then \
+        pip install --no-cache-dir "psycopg2-binary>=2.9,<3.0" "alembic>=1.13,<2.0"; \
+    fi
+
 COPY src ./src
 COPY benchmark ./benchmark
 

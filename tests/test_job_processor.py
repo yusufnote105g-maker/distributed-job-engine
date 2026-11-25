@@ -1,6 +1,7 @@
 """Job processor tests (real database, real workers)."""
 
 import asyncio
+import os
 
 import pytest
 
@@ -124,13 +125,13 @@ async def test_cancel_unknown_job(processor):
 
 
 @pytest.mark.asyncio
-async def test_graceful_shutdown(tmp_path):
+async def test_graceful_shutdown(tmp_path, db_url):
     from src.services.database import DatabaseService
     from src.services.job_processor import JobProcessor
 
     from conftest import make_config
 
-    config = make_config(tmp_path, worker_count=3)
+    config = make_config(tmp_path, database_url=db_url, worker_count=3)
     db = DatabaseService(config)
     await db.initialize()
     processor = __import__(
@@ -197,6 +198,9 @@ async def test_double_cancel_returns_false(processor):
 @pytest.mark.asyncio
 async def test_initialize_creates_missing_directory(tmp_path):
     """A sqlite path in a missing directory must be created, not crash."""
+    if os.environ.get("TEST_DATABASE_URL"):
+        pytest.skip("SQLite-only behaviour")
+
     from src.config import JobEngineConfig
     from src.services.database import DatabaseService
 
