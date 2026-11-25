@@ -1,6 +1,5 @@
 """HTTP API routes."""
 
-import hmac
 import logging
 from datetime import datetime
 from typing import List, Optional
@@ -15,6 +14,7 @@ from ..models import JobPriority, JobStatus
 from ..services.database import DatabaseService
 from ..services.job_processor import JobProcessor
 from ..utils import utcnow
+from .auth import require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -91,25 +91,12 @@ def get_config(request: Request) -> JobEngineConfig:
     return request.app.state.config
 
 
-def require_api_key(request: Request) -> None:
-    config: JobEngineConfig = request.app.state.config
-    if not config.secret_key:
-        return
-    provided = request.headers.get(config.api_key_header)
-    if provided is None or not hmac.compare_digest(
-        provided.encode("utf-8"), config.secret_key.encode("utf-8")
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
-        )
-
-
 # ------------------------------------------------------------------- endpoints
 @router.post(
     "/jobs",
     response_model=JobResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_scope("write"))],
 )
 async def submit_job(
     body: JobSubmissionRequest,
@@ -130,7 +117,11 @@ async def submit_job(
     return JobResponse(**job)
 
 
-@router.get("/jobs", response_model=JobsListResponse)
+@router.get(
+    "/jobs",
+    response_model=JobsListResponse,
+    dependencies=[Depends(require_scope("read"))],
+)
 async def list_jobs(
     status_filter: Optional[JobStatus] = Query(
         None, alias="status", description="Filter by status"
@@ -148,7 +139,11 @@ async def list_jobs(
     )
 
 
-@router.get("/jobs/{job_id}", response_model=JobResponse)
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobResponse,
+    dependencies=[Depends(require_scope("read"))],
+)
 async def get_job(job_id: str, db: DatabaseService = Depends(get_db)):
     job = await db.get_job(job_id)
     if job is None:
@@ -159,7 +154,7 @@ async def get_job(job_id: str, db: DatabaseService = Depends(get_db)):
 @router.post(
     "/jobs/{job_id}/cancel",
     response_model=MessageResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_scope("write"))],
 )
 async def cancel_job(job_id: str, db: DatabaseService = Depends(get_db)):
     job = await db.get_job(job_id)
@@ -176,7 +171,7 @@ async def cancel_job(job_id: str, db: DatabaseService = Depends(get_db)):
 @router.delete(
     "/jobs/{job_id}",
     response_model=MessageResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_scope("write"))],
 )
 async def delete_job(job_id: str, db: DatabaseService = Depends(get_db)):
     """REST-style alias of POST /jobs/{job_id}/cancel."""
@@ -210,17 +205,21 @@ async def health_check(
     )
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(require_scope("read"))])
 async def get_stats(db: DatabaseService = Depends(get_db)):
     return await db.stats()
 
 
-@router.get("/metrics")
+@router.get("/metrics", dependencies=[Depends(require_scope("read"))])
 async def get_metrics(processor: JobProcessor = Depends(get_processor)):
     return await processor.metrics()
 
 
-@router.get("/metrics/prometheus", include_in_schema=False)
+@router.get(
+    "/metrics/prometheus",
+    include_in_schema=False,
+    dependencies=[Depends(require_scope("read"))],
+)
 async def get_prometheus_metrics(
     db: DatabaseService = Depends(get_db),
     processor: JobProcessor = Depends(get_processor),

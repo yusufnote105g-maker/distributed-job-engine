@@ -186,8 +186,14 @@ async def test_api_key_protection(api_client_factory):
     )
     assert allowed.status_code == 201
 
-    # Read-only endpoints stay public.
-    assert (await client.get(f"{API}/jobs")).status_code == 200
+    # Reads are protected too: they expose payloads and results.
+    assert (await client.get(f"{API}/jobs")).status_code == 401
+    assert (
+        await client.get(f"{API}/jobs", headers={"X-API-Key": "s3cret"})
+    ).status_code == 200
+
+    # Health stays public so probes do not need credentials.
+    assert (await client.get(f"{API}/health")).status_code == 200
 
 
 @pytest.mark.asyncio

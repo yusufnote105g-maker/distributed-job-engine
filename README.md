@@ -31,7 +31,7 @@ Three ways, pick one.
 **Wheel from the release** — no clone, no build:
 
 ```bash
-pip install https://github.com/yusufnote105g-maker/distributed-job-engine/releases/download/v1.3.0/distributed_job_engine-1.3.0-py3-none-any.whl
+pip install https://github.com/yusufnote105g-maker/distributed-job-engine/releases/download/v1.4.0/distributed_job_engine-1.4.0-py3-none-any.whl
 job-engine version
 job-engine serve --host 0.0.0.0 --port 8000
 ```
@@ -42,10 +42,10 @@ release.
 **Docker image** — published to GHCR on every `v*` tag:
 
 ```bash
-docker pull ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.3.0
+docker pull ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.4.0
 docker run -p 8000:8000 -v job-data:/data \
   -e DATABASE_URL=sqlite:////data/jobs.db \
-  ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.3.0
+  ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.4.0
 ```
 
 **From source** — see Quick start below.
@@ -114,6 +114,18 @@ different rows instead of colliding. `serve` and `worker` apply pending
 migrations on startup by default; set `AUTO_MIGRATE=false` to make
 `job-engine migrate` an explicit deployment step.
 
+## Authentication
+
+Auth is off by default. Set one key or several with scopes:
+
+```bash
+API_KEYS="ci:read+write:$CI_SECRET; dashboard:read:$DASH_SECRET" job-engine serve
+```
+
+`read` covers GET endpoints, `write` covers submit/cancel/delete, `admin` covers
+both. Keys are rotated without downtime by adding the new one, switching clients
+and removing the old one. `GET /health` stays public.
+
 ## Configuration
 
 All settings are environment variables (`src/config.py`).
@@ -132,8 +144,12 @@ All settings are environment variables (`src/config.py`).
 | `HEALTH_CHECK_INTERVAL` | `1.0` | retry-sweep interval, seconds |
 | `API_HOST` / `API_PORT` | `0.0.0.0` / `8000` | bind address |
 | `API_PREFIX` | `/api/v1` | route prefix |
-| `SECRET_KEY` | *(empty)* | enables `X-API-Key` auth when set |
+| `SECRET_KEY` | *(empty)* | single key with all scopes; enables auth |
+| `API_KEYS` | *(empty)* | `name:scopes:secret;...` with scopes `read`/`write`/`admin` |
 | `API_KEY_HEADER` | `X-API-Key` | header name for the key |
+| `RATE_LIMIT_PER_MINUTE` | `0` | per-key request limit; `0` disables |
+| `LOG_FORMAT` | `text` | `json` for structured logs with a request id |
+| `REQUEST_ID_HEADER` | `X-Request-ID` | request id echoed back and logged |
 | `ENABLE_WORKERS` | `true` | run the worker pool in this process |
 | `RECOVER_STALE_JOBS` | `true` | requeue stuck jobs at startup |
 | `STALE_JOB_AGE` | `0` | only recover jobs older than this; set above `WORKER_TIMEOUT` with several processes |

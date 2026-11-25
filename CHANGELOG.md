@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-11-25
+
+Observability and access control for a shared deployment.
+
+### Added
+
+- **Scoped API keys.** `API_KEYS="name:scopes:secret;..."` with `read`, `write`
+  and `admin` scopes, constant-time comparison, and startup failure on unknown
+  scopes. `SECRET_KEY` keeps working as a key named `default` with all scopes,
+  so both are valid during rotation.
+- **Rate limiting.** `RATE_LIMIT_PER_MINUTE` applies a sliding window per key
+  (or per client IP when auth is off) and returns `429` with `Retry-After`.
+  `TRUST_FORWARDED_FOR` makes the limiter use the first proxy hop.
+- **Structured logs.** `LOG_FORMAT=json` emits one JSON object per line with
+  `ts`, `level`, `logger`, `message`, `request_id` and access fields
+  (`method`, `path`, `status`, `duration_ms`, `client`, `api_key` name only).
+- **Request ids.** Every response carries `X-Request-ID` (configurable with
+  `REQUEST_ID_HEADER`), reused from the client when present and attached to
+  every log line for the request.
+
+### Changed
+
+- **Breaking:** when authentication is enabled, read endpoints (`GET /jobs`,
+  `/jobs/{id}`, `/stats`, `/metrics`, `/metrics/prometheus`) now require a key
+  with the `read` scope. They expose payloads, results and errors, so leaving
+  them public was a data leak. `GET /health` stays public.
+
 ## [1.3.0] — 2026-11-24
 
 The engine now runs on PostgreSQL as well as SQLite, and the HTTP API can be

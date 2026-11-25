@@ -1,6 +1,8 @@
 """Application entrypoint."""
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -8,22 +10,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .api.auth import RateLimiter, build_keys
 from .api.routes import router
 from .config import JobEngineConfig
+from .logging_config import configure_logging, request_id_var
 from .services.database import DatabaseService
 from .services.job_processor import JobProcessor
 
 VERSION = __version__
 
 logger = logging.getLogger(__name__)
-
-
-def configure_logging(config: JobEngineConfig) -> None:
-    logging.basicConfig(
-        level=getattr(logging, config.log_level.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        force=True,
-    )
 
 
 def create_app(config: Optional[JobEngineConfig] = None) -> FastAPI:
@@ -67,6 +63,48 @@ def create_app(config: Optional[JobEngineConfig] = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.state.api_keys = build_keys(config)
+    app.state.rate_limiter = RateLimiter(config.rate_limit_per_minute)
+
+    @app.middleware("http")
+    async def request_context(request, call_next):
+        """Attach a request id, log one access line, expose the id to clients."""
+        request_id = request.headers.get(config.request_id_header) or uuid.uuid4().hex
+        token = request_id_var.set(request_id)
+        started = time.perf_counter()
+        client = request.client.host if request.client else "-"
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception(
+                "request failed",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": 500,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "client": client,
+                    "api_key": getattr(request.state, "api_key_name", None),
+                },
+            )
+            request_id_var.reset(token)
+            raise
+
+        response.headers[config.request_id_header] = request_id
+        logger.info(
+            "request",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "client": client,
+                "api_key": getattr(request.state, "api_key_name", None),
+            },
+        )
+        request_id_var.reset(token)
+        return response
 
     app.include_router(router, prefix=config.api_prefix)
     return app

@@ -62,12 +62,16 @@ A timed-out job goes to `failed`, not `retrying`. This is deliberate (a
 repeatedly timing-out job usually indicates a real problem), but it means
 timeouts do not consume the retry budget.
 
-## Auth is a shared static key
+## Auth is key-based, without users
 
-`SECRET_KEY` is a single shared secret compared in constant time
-(`hmac.compare_digest`). No users, no scopes,
-no rotation, no rate limiting, and auth is disabled entirely when the key is
-empty. Put the service behind a gateway if it is exposed.
+`SECRET_KEY` is a single shared key; `API_KEYS` adds named keys with `read`,
+`write` or `admin` scopes and allows rotation without downtime. There are still
+no user accounts, no per-key audit trail beyond the key name in access logs, and
+no expiry. The rate limit is in-process: N replicas allow N × the configured
+limit, so a global cap needs a shared store or a gateway.
+
+When no key is configured, every request is anonymous with all scopes. Auth is
+opt-in, not enforced.
 
 ## No payload isolation
 

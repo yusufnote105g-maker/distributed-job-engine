@@ -2,10 +2,50 @@
 
 Base path: `/api/v1`. Interactive docs: `/docs`, schema: `/openapi.json`.
 
-Authentication is **off by default**. If `SECRET_KEY` is set, write endpoints
-(`POST /jobs`, `POST /jobs/{id}/cancel`, `DELETE /jobs/{id}`) require the header
-named by `API_KEY_HEADER` (default `X-API-Key`) to match it. Read endpoints
-stay public.
+## Authentication
+
+Authentication is **off by default**. It turns on when `API_KEYS` or the legacy
+`SECRET_KEY` is set. The header is named by `API_KEY_HEADER` (default
+`X-API-Key`).
+
+`API_KEYS` is a semicolon-separated list of `name:scopes:secret` entries; scopes
+are joined by `+`:
+
+```bash
+API_KEYS="ci:read+write:long-secret; dashboard:read:other-secret; ops:admin:third"
+```
+
+| Scope | Grants |
+| --- | --- |
+| `read` | `GET /jobs`, `GET /jobs/{id}`, `GET /stats`, `GET /metrics`, `GET /metrics/prometheus` |
+| `write` | `POST /jobs`, `POST /jobs/{id}/cancel`, `DELETE /jobs/{id}` |
+| `admin` | everything above |
+
+`GET /health` is always public so probes need no credentials.
+
+Responses:
+
+| Status | Meaning |
+| --- | --- |
+| `401` | key missing or wrong (`WWW-Authenticate: X-API-Key`) |
+| `403` | key is valid but lacks the required scope |
+| `429` | rate limit exceeded, `Retry-After: 60` (`RATE_LIMIT_PER_MINUTE`) |
+
+`SECRET_KEY` keeps working as a single key named `default` with all scopes, so
+existing deployments do not break. When both are set, both are accepted — which
+is how keys are rotated without downtime: add the new key, deploy, switch
+clients, remove the old key, deploy again.
+
+> **Behaviour change in 1.4.0:** when authentication is enabled, read endpoints
+> are protected too. They expose payloads, results and error messages, so they
+> were previously an unauthenticated data leak.
+
+## Request id
+
+Every response carries the header named by `REQUEST_ID_HEADER` (default
+`X-Request-ID`). If the client sends one it is reused, otherwise a random id is
+generated. The same id appears in every log line for that request, in both
+`LOG_FORMAT=text` and `LOG_FORMAT=json`.
 
 ## POST /jobs
 

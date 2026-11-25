@@ -27,11 +27,58 @@ All settings come from environment variables (`src/config.py`).
 | `API_PREFIX` | `/api/v1` | Route prefix |
 | `HEALTH_CHECK_INTERVAL` | `1.0` | Scheduler tick, seconds |
 | `LOG_LEVEL` | `INFO` | Python log level |
-| `SECRET_KEY` | *(empty)* | Empty disables authentication |
+| `LOG_FORMAT` | `text` | `json` emits one JSON object per line with a request id |
+| `REQUEST_ID_HEADER` | `X-Request-ID` | Header echoed back and attached to every log line |
+| `SECRET_KEY` | *(empty)* | Single key with all scopes; empty disables authentication |
+| `API_KEYS` | *(empty)* | `name:scopes:secret` entries separated by `;`, scopes joined by `+` |
 | `API_KEY_HEADER` | `X-API-Key` | Header carrying the key |
+| `RATE_LIMIT_PER_MINUTE` | `0` | Per-key (or per-IP when auth is off) limit; `0` disables |
+| `TRUST_FORWARDED_FOR` | `false` | Use the first `X-Forwarded-For` hop as the client identity |
 | `ENABLE_WORKERS` | `true` | Set `false` for an API-only node |
 | `RECOVER_STALE_JOBS` | `true` | Requeue `claimed`/`running` rows on startup |
 | `STALE_JOB_AGE` | `0` | Only requeue jobs older than this many seconds; `0` means all. Set above `WORKER_TIMEOUT` when several processes share the database |
+
+## Authentication and keys
+
+```bash
+export API_KEYS="ci:read+write:$CI_SECRET; dashboard:read:$DASH_SECRET; ops:admin:$OPS_SECRET"
+export RATE_LIMIT_PER_MINUTE=600
+```
+
+Scopes: `read` (GET endpoints), `write` (submit/cancel/delete), `admin` (both).
+`GET /health` stays public for probes. Invalid scope names abort startup instead
+of silently disabling auth.
+
+Rotation without downtime:
+
+1. add the new key to `API_KEYS` and deploy — both keys work;
+2. switch clients to the new key;
+3. remove the old key and deploy again.
+
+`SECRET_KEY` is accepted alongside `API_KEYS` as a key named `default`, so
+existing clients keep working during the migration.
+
+The rate limit is in-process: N replicas allow N × `RATE_LIMIT_PER_MINUTE`. Put
+a shared limiter in the gateway if you need a global cap.
+
+## Logging
+
+```bash
+LOG_FORMAT=json LOG_LEVEL=INFO job-engine serve
+```
+
+```json
+{"ts": "2026-11-25T02:11:00.508+00:00", "level": "INFO", "logger": "src.main",
+ "message": "request", "request_id": "demo-trace-777", "method": "GET",
+ "path": "/api/v1/health", "status": 200, "duration_ms": 10.39,
+ "client": "127.0.0.1", "api_key": "ci"}
+```
+
+* `request_id` comes from `X-Request-ID` or is generated; it is returned to the
+  client and included in every log line, including worker logs for the same
+  request.
+* `api_key` is the key *name*, never the secret.
+* Text mode is unchanged apart from the `[request_id]` field.
 
 ## Docker
 
@@ -231,6 +278,8 @@ complete; CI runs it against the installed wheel on both SQLite and PostgreSQL.
 | `No module named 'psycopg2'` | PostgreSQL URL without the driver | `pip install 'distributed-job-engine[postgres]'` |
 | `/health` says `degraded` | Database unreachable or workers stopped | Check logs and `ENABLE_WORKERS` |
 | `409` on cancel | Job already terminal | Expected; read the job first |
-| `401` on writes | `SECRET_KEY` set but header missing/wrong | Send the configured `API_KEY_HEADER` |
+| `401` | `API_KEYS`/`SECRET_KEY` set but the header is missing or wrong | Send the configured `API_KEY_HEADER` |
+| `403` | Key is valid but lacks the scope | Give the key `read`/`write`/`admin` |
+| `429` | Rate limit exceeded | Raise `RATE_LIMIT_PER_MINUTE` or back off |
 | Jobs stay `pending` | `ENABLE_WORKERS=false` or workers crashed | Check `/metrics` → `active_workers` |
 | Jobs pile up in `dead_letter` | Payload keeps failing | Inspect `error`, fix the payload, resubmit with a new `idempotency_key` |

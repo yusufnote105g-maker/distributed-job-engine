@@ -57,10 +57,19 @@ class JobEngineConfig:
 
     # Logging
     log_level: str = "INFO"
+    log_format: str = "text"  # "text" or "json"
+    request_id_header: str = "X-Request-ID"
 
     # Security
     secret_key: str = ""
     api_key_header: str = "X-API-Key"
+    # Semicolon-separated `name:scopes:secret` entries. Scopes are separated by
+    # `+` (read, write, admin). Example:
+    #   API_KEYS="ci:read+write:long-secret; dashboard:read:other-secret"
+    api_keys: str = ""
+    # Per-key (or per-IP when auth is off) request limit per minute; 0 disables.
+    rate_limit_per_minute: int = 0
+    trust_forwarded_for: bool = False
 
     # Testing / operations
     enable_workers: bool = True
@@ -91,8 +100,17 @@ class JobEngineConfig:
                 "HEALTH_CHECK_INTERVAL", cls.health_check_interval
             ),
             log_level=_env_str("LOG_LEVEL", cls.log_level),
+            log_format=_env_str("LOG_FORMAT", cls.log_format),
+            request_id_header=_env_str("REQUEST_ID_HEADER", cls.request_id_header),
             secret_key=_env_str("SECRET_KEY", cls.secret_key),
             api_key_header=_env_str("API_KEY_HEADER", cls.api_key_header),
+            api_keys=_env_str("API_KEYS", cls.api_keys),
+            rate_limit_per_minute=_env_int(
+                "RATE_LIMIT_PER_MINUTE", cls.rate_limit_per_minute
+            ),
+            trust_forwarded_for=_env_bool(
+                "TRUST_FORWARDED_FOR", cls.trust_forwarded_for
+            ),
             enable_workers=_env_bool("ENABLE_WORKERS", cls.enable_workers),
             recover_stale_jobs=_env_bool("RECOVER_STALE_JOBS", cls.recover_stale_jobs),
             stale_job_age=_env_float("STALE_JOB_AGE", cls.stale_job_age),
