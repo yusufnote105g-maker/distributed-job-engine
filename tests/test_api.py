@@ -261,3 +261,61 @@ async def test_health_matches_documented_contract(api_client):
         "database_status",
         "worker_status",
     }
+
+
+@pytest.mark.asyncio
+async def test_jobs_cursor_pagination(api_client):
+    """next_cursor pages through the list without duplicates or gaps."""
+    created = []
+    for index in range(5):
+        response = await api_client.post(
+            f"{API}/jobs", json={"payload": f"job-{index}"}
+        )
+        created.append(response.json()["job_id"])
+
+    seen = []
+    cursor = None
+    for _page in range(10):
+        url = f"{API}/jobs?limit=2" + (f"&before={cursor}" if cursor else "")
+        response = await api_client.get(url)
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["jobs"]) <= 2
+        seen.extend(job["job_id"] for job in body["jobs"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+
+    assert seen == list(reversed(created))
+    assert len(seen) == len(set(seen))
+
+
+@pytest.mark.asyncio
+async def test_jobs_cursor_respects_status_filter(api_client):
+    for index in range(3):
+        await api_client.post(f"{API}/jobs", json={"payload": f"p-{index}"})
+
+    page = await api_client.get(f"{API}/jobs?limit=1&status=pending")
+    assert page.status_code == 200
+    body = page.json()
+    assert len(body["jobs"]) == 1
+    assert body["jobs"][0]["status"] == "pending"
+
+    next_page = await api_client.get(
+        f"{API}/jobs?limit=1&status=pending&before={body['next_cursor']}"
+    )
+    assert next_page.status_code == 200
+    assert next_page.json()["jobs"][0]["job_id"] != body["jobs"][0]["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_jobs_unknown_cursor_returns_404(api_client):
+    response = await api_client.get(f"{API}/jobs?before=does-not-exist")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_jobs_last_page_has_no_cursor(api_client):
+    await api_client.post(f"{API}/jobs", json={"payload": "only-one"})
+    response = await api_client.get(f"{API}/jobs?limit=10")
+    assert response.json()["next_cursor"] is None

@@ -64,6 +64,7 @@ class JobsListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    next_cursor: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -128,14 +129,26 @@ async def list_jobs(
     ),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    before: Optional[str] = Query(
+        None,
+        description="Cursor: return jobs older than this job_id (from next_cursor)",
+    ),
     db: DatabaseService = Depends(get_db),
 ):
-    data = await db.list_jobs(status=status_filter, limit=limit, offset=offset)
+    try:
+        data = await db.list_jobs(
+            status=status_filter, limit=limit, offset=offset, before=before
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail=f"Cursor job not found: {before}")
+
+    jobs = [JobResponse(**job) for job in data["jobs"]]
     return JobsListResponse(
-        jobs=[JobResponse(**job) for job in data["jobs"]],
+        jobs=jobs,
         total=data["total"],
         limit=data["limit"],
         offset=data["offset"],
+        next_cursor=jobs[-1].job_id if len(jobs) == limit else None,
     )
 
 

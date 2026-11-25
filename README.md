@@ -31,7 +31,7 @@ Three ways, pick one.
 **Wheel from the release** — no clone, no build:
 
 ```bash
-pip install https://github.com/yusufnote105g-maker/distributed-job-engine/releases/download/v1.4.0/distributed_job_engine-1.4.0-py3-none-any.whl
+pip install https://github.com/yusufnote105g-maker/distributed-job-engine/releases/download/v1.5.0/distributed_job_engine-1.5.0-py3-none-any.whl
 job-engine version
 job-engine serve --host 0.0.0.0 --port 8000
 ```
@@ -42,10 +42,10 @@ release.
 **Docker image** — published to GHCR on every `v*` tag:
 
 ```bash
-docker pull ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.4.0
+docker pull ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.5.0
 docker run -p 8000:8000 -v job-data:/data \
   -e DATABASE_URL=sqlite:////data/jobs.db \
-  ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.4.0
+  ghcr.io/yusufnote105g-maker/distributed-job-engine:v1.5.0
 ```
 
 **From source** — see Quick start below.
@@ -171,13 +171,26 @@ Full reference: [`docs/api.md`](docs/api.md).
 | `GET` | `/api/v1/metrics` | counters + worker info (JSON) |
 | `GET` | `/api/v1/metrics/prometheus` | Prometheus text format |
 
-## Payloads
+## Payloads and handlers
 
-A payload is an opaque string. The bundled runner understands JSON objects with
-a `task` key — `noop`, `sleep`, `fail`, `flaky` — which is enough to exercise
-retries, timeouts and priorities. Everything else completes as an opaque blob.
-See [`docs/architecture.md`](docs/architecture.md#payload-execution) for how to
-plug in real work.
+A payload is an opaque string. If it is a JSON object, its `task` field selects
+a registered handler:
+
+```python
+from distributed_job_engine.handlers import handler
+
+@handler("send-email")
+async def send_email(spec, context):
+    # spec: decoded payload, context: job_id, retry_count, payload
+    return "sent"
+```
+
+Handlers may be sync or async. Exceptions follow the retry policy; an unknown
+task name goes straight to `dead_letter`. Built-in handlers (`noop`, `sleep`,
+`fail`, `flaky`) exist for examples and smoke tests. Payloads that are not JSON
+objects complete as opaque blobs.
+
+See [`docs/architecture.md`](docs/architecture.md#task-handlers).
 
 ## Tests
 

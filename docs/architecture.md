@@ -99,6 +99,30 @@ Any other payload succeeds without side effects and is reported as
 `processed payload (N bytes)`. Real workloads replace `_execute_payload` with
 their own dispatcher.
 
+## Task handlers
+
+A payload is a JSON object; its `task` field is resolved in a process-wide
+registry (`src/handlers.py`). The worker never hard-codes business logic:
+
+```python
+from distributed_job_engine.handlers import handler
+
+@handler("resize-image")
+async def resize(spec, context):
+    # spec: the decoded payload; context: job_id, retry_count, payload
+    return "resized"
+```
+
+* Handlers may be sync or async; the return value is stored as the job result.
+* Any exception follows the retry policy.
+* `UnknownTaskError` skips retries and goes straight to `dead_letter`, because
+  retrying a missing handler can never succeed.
+* The registry is per process, so every API/worker replica must import the
+  module that registers the handlers. Duplicate registration for the same name
+  fails loudly at import time.
+* Built-in handlers (`noop`, `sleep`, `fail`, `flaky`) exist for smoke tests and
+  examples; production deployments register their own.
+
 ## State machine
 
 ```
@@ -126,7 +150,8 @@ and for jobs whose retry budget is already exhausted; retryable failures go to
 
 ## Scaling out
 
-The design is stateless apart from SQLite, so running several containers
-against one database file works for moderate load. Beyond that, the database
-becomes the bottleneck — the documented upgrade path is Postgres with
-`SELECT ... FOR UPDATE SKIP LOCKED`.
+The process is stateless; all state is in the database. On SQLite, several
+containers can share one file for moderate load, but writers are serialised.
+Beyond that, point `DATABASE_URL` at PostgreSQL: claims use
+`SELECT ... FOR UPDATE SKIP LOCKED`, and the API and worker processes scale
+independently (`job-engine serve --no-workers` + `job-engine worker`).

@@ -1,6 +1,7 @@
 """Concurrent job processor."""
 
 import asyncio
+import inspect
 import json
 import logging
 import random
@@ -10,15 +11,19 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from ..config import JobEngineConfig
+from ..handlers import (
+    HandlerContext,
+    JobExecutionError,
+    UnknownTaskError,
+    registry,
+)
 from ..models import JobPriority
 from ..utils import utcnow
 from .database import DatabaseService
 
 logger = logging.getLogger(__name__)
 
-
-class JobExecutionError(Exception):
-    """Raised when a job payload asks to fail."""
+__all__ = ["JobProcessor", "JobExecutionError"]
 
 
 class JobProcessor:
@@ -111,7 +116,7 @@ class JobProcessor:
 
         try:
             result = await asyncio.wait_for(
-                self._execute_payload(job["payload"], job.get("retry_count", 0)),
+                self._execute_payload(job),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -127,6 +132,17 @@ class JobProcessor:
             elapsed = time.perf_counter() - started
             await self.db.mark_failed(job_id, "Job cancelled during shutdown", elapsed)
             raise
+        except UnknownTaskError as exc:
+            # Retrying cannot fix a missing handler; send it straight to the
+            # dead-letter queue with a clear message.
+            elapsed = time.perf_counter() - started
+            message = str(exc)
+            if await self.db.mark_dead_letter(
+                job_id, message, elapsed, job.get("retry_count", 0)
+            ):
+                self._failed += 1
+                logger.error("%s dead-lettered: %s", job_id, message)
+            return
         except Exception as exc:  # noqa: BLE001 - job failure is expected
             elapsed = time.perf_counter() - started
             await self._handle_failure(job, str(exc) or exc.__class__.__name__, elapsed)
@@ -184,7 +200,8 @@ class JobProcessor:
             delay = delay * jitter
         return max(0.0, delay)
 
-    async def _execute_payload(self, payload: str, retry_count: int) -> str:
+    async def _execute_payload(self, job: Dict[str, Any]) -> str:
+        payload = job["payload"]
         try:
             spec = json.loads(payload)
         except (TypeError, ValueError):
@@ -194,23 +211,21 @@ class JobProcessor:
             return "processed payload"
 
         task = spec.get("task", "noop")
+        handler = registry.get(task)
+        if handler is None:
+            raise UnknownTaskError(
+                f"Unknown task {task!r}; registered tasks: {registry.names()}"
+            )
 
-        if task == "sleep":
-            await asyncio.sleep(float(spec.get("seconds", 0)))
-            return f"slept {spec.get('seconds', 0)}s"
-
-        if task == "fail":
-            raise JobExecutionError(spec.get("message", "job failed"))
-
-        if task == "flaky":
-            fail_times = int(spec.get("fail_times", 1))
-            if retry_count < fail_times:
-                raise JobExecutionError(
-                    f"flaky failure {retry_count + 1}/{fail_times}"
-                )
-            return "recovered after retries"
-
-        return "noop"
+        context = HandlerContext(
+            job_id=job["job_id"],
+            retry_count=job.get("retry_count", 0),
+            payload=payload,
+        )
+        result = handler(spec, context)
+        if inspect.isawaitable(result):
+            result = await result
+        return "" if result is None else str(result)
 
     # ------------------------------------------------------------ scheduler
     async def _scheduler(self) -> None:

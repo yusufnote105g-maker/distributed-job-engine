@@ -77,13 +77,37 @@ Validation failures return `422`.
 
 ## GET /jobs
 
-Query parameters: `status`, `limit` (1–100, default 50), `offset` (≥0).
+Query parameters:
+
+| Parameter | Type | Meaning |
+| --- | --- | --- |
+| `status` | enum | filter by status |
+| `limit` | int | 1–100, default 50 |
+| `offset` | int | ≥0, classic pagination |
+| `before` | string | cursor: return jobs older than this `job_id` |
 
 ```json
-{ "jobs": [ ... ], "total": 42, "limit": 50, "offset": 0 }
+{
+  "jobs": [ ... ],
+  "total": 42,
+  "limit": 2,
+  "offset": 0,
+  "next_cursor": "0f1c2a3e-..."
+}
 ```
 
 Ordered by `created_at DESC, id DESC`.
+
+`next_cursor` is the `job_id` of the last job on a full page, or `null` when
+there is nothing left. Pass it back as `before` to get the next page. This is
+keyset pagination: pages do not shift when new jobs are submitted, and deep
+pages stay as fast as the first one. `offset` remains available for simple
+cases. An unknown `before` returns `404`.
+
+```bash
+curl -s "localhost:8000/api/v1/jobs?limit=50"
+curl -s "localhost:8000/api/v1/jobs?limit=50&before=$CURSOR"
+```
 
 ## GET /jobs/{job_id}
 

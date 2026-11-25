@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-11-25
+
+Applications can plug in their own work, and listings no longer degrade with
+offset depth.
+
+### Added
+
+- **Task handler registry** (`distributed_job_engine.handlers`). A payload's
+  `task` field resolves to a registered callable; sync and async handlers are
+  both supported and receive a `HandlerContext` with `job_id`, `retry_count` and
+  the raw payload. Registration is `@handler("name")` or
+  `register_handler("name", func)`, and duplicates fail at import time.
+- **Keyset pagination** for `GET /jobs`: `before=<job_id>` plus `next_cursor` in
+  the response. Pages stay correct while jobs are inserted and deep pages are as
+  fast as the first. `offset` still works.
+
+### Changed
+
+- **Breaking:** an unknown `task` no longer silently succeeds as `noop`. It is
+  dead-lettered immediately with a message listing the registered tasks, because
+  retrying cannot fix a missing handler.
+- The built-in handlers (`noop`, `sleep`, `fail`, `flaky`) now live in the
+  registry instead of a hard-coded branch in the processor.
+
 ## [1.4.0] — 2026-11-25
 
 Observability and access control for a shared deployment.

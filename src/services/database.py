@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -276,14 +276,18 @@ class DatabaseService:
         status: Optional[JobStatus] = None,
         limit: int = 50,
         offset: int = 0,
+        before: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return await asyncio.to_thread(self._list_jobs_sync, status, limit, offset)
+        return await asyncio.to_thread(
+            self._list_jobs_sync, status, limit, offset, before
+        )
 
     def _list_jobs_sync(
         self,
         status: Optional[JobStatus],
         limit: int,
         offset: int,
+        before: Optional[str] = None,
     ) -> Dict[str, Any]:
         session = self.Session()
         try:
@@ -292,6 +296,25 @@ class DatabaseService:
             if status is not None:
                 query = query.where(Job.status == status)
                 count_query = count_query.where(Job.status == status)
+
+            if before is not None:
+                # Keyset pagination: `(created_at, id) < cursor` matches the
+                # ordering below and stays correct while rows are inserted.
+                cursor = session.execute(
+                    select(Job.created_at, Job.id).where(Job.job_id == before)
+                ).first()
+                if cursor is None:
+                    raise LookupError(before)
+                created_at, job_pk = cursor
+                query = query.where(
+                    or_(
+                        Job.created_at < created_at,
+                        and_(
+                            Job.created_at == created_at,
+                            Job.id < job_pk,
+                        ),
+                    )
+                )
 
             total = session.execute(count_query).scalar_one()
             result = session.execute(

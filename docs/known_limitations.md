@@ -75,9 +75,11 @@ opt-in, not enforced.
 
 ## No payload isolation
 
-Payloads are not sandboxed. Anything that can submit a job can influence what
-the worker executes (in the default runner only a fixed set of no-op tasks; in
-a real deployment, whatever your dispatcher allows).
+Handlers run in the worker process with full Python privileges. A payload can
+only select a registered task, but it controls that task's arguments, so the
+handler is responsible for validating them. Anything that can submit a job can
+influence what the worker does. Do not run untrusted code this way: use a
+sandbox or a separate service.
 
 ## Timestamps are naive UTC
 
@@ -86,11 +88,6 @@ All timestamps are UTC without a timezone suffix. They are produced by
 `tzinfo`, so the deprecated `datetime.utcnow()` is no longer used and the stored
 format is unchanged. The remaining gap is that values are still naive: any
 consumer must know they are UTC.
-
-## No pagination cursor
-
-`GET /jobs` uses `LIMIT/OFFSET`. Deep offsets get slower and pages can shift
-when rows are inserted concurrently.
 
 ## Observability stops at metrics
 
